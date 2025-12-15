@@ -168,6 +168,16 @@ class QueryParam:
     containing citation information for the retrieved content.
     """
 
+    hop_depth: int = int(os.getenv("HOP_DEPTH", "2"))
+    """Number of hops to traverse in the knowledge graph from initially found entities.
+    - 1 (default): Only direct relations from found entities (current behavior)
+    - 2: Include entities connected to the direct neighbors (2-hop)
+    - 3+: Deeper traversal for complex relationship chains
+
+    This is useful for legal/regulatory domains where amendments reference original articles.
+    For example, finding "Khoản 10 sửa đổi" that supplements "Điều 23" when querying about "Điều 23".
+    """
+
 
 @dataclass
 class StorageNameSpace(ABC):

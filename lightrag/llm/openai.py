@@ -449,7 +449,34 @@ async def openai_complete_if_cache(
                 raise InvalidResponseError("Invalid response from OpenAI API")
 
             message = response.choices[0].message
-            content = getattr(message, "content", None)
+
+            # Handle structured output responses (beta.chat.completions.parse)
+            # When using response_format with a Pydantic model, the parsed object
+            # is in message.parsed, and we need to convert it back to JSON string
+            parsed_obj = getattr(message, "parsed", None)
+            logger.debug(f"Message parsed_obj: {parsed_obj}, type: {type(parsed_obj)}")
+            logger.debug(f"Message content: {getattr(message, 'content', None)}")
+            
+            if parsed_obj is not None:
+                # Check for refusal first
+                refusal = getattr(message, "refusal", None)
+                if refusal:
+                    logger.error(f"Model refused to respond: {refusal}")
+                    await openai_async_client.close()
+                    raise InvalidResponseError(f"Model refused to respond: {refusal}")
+                # Convert Pydantic object to JSON string
+                if hasattr(parsed_obj, "model_dump_json"):
+                    content = parsed_obj.model_dump_json()
+                elif hasattr(parsed_obj, "json"):
+                    content = parsed_obj.json()
+                else:
+                    import json as json_module
+                    content = json_module.dumps(parsed_obj)
+                logger.debug(f"Structured output content: {content}")
+            else:
+                content = getattr(message, "content", None)
+                logger.debug(f"Regular content: {content}")
+
             reasoning_content = getattr(message, "reasoning_content", "")
 
             # Handle COT logic for non-streaming responses (only if enabled)
@@ -530,6 +557,29 @@ async def openai_complete(
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
+        keyword_extraction=keyword_extraction,
+        **kwargs,
+    )
+
+
+async def gpt_4_1_complete(
+    prompt,
+    system_prompt=None,
+    history_messages=None,
+    enable_cot: bool = False,
+    keyword_extraction=False,
+    **kwargs,
+) -> str:
+    if history_messages is None:
+        history_messages = []
+    if keyword_extraction:
+        kwargs["response_format"] = GPTKeywordExtractionFormat
+    return await openai_complete_if_cache(
+        "gpt-4.1",
+        prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages,
+        enable_cot=enable_cot,
         keyword_extraction=keyword_extraction,
         **kwargs,
     )

@@ -2796,7 +2796,9 @@ class LightRAG:
             return raw_data
 
         except Exception as e:
+            import traceback
             logger.error(f"Query failed: {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             # Return error response
             return {
                 "status": "failure",

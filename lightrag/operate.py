@@ -5,6 +5,7 @@ from pathlib import Path
 import asyncio
 import json
 import json_repair
+import re
 from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
 
@@ -3313,9 +3314,12 @@ async def extract_keywords_only(
     result = await use_model_func(kw_prompt, keyword_extraction=True)
 
     # 5. Parse out JSON from the LLM response
+    logger.info(f"[DEBUG] Raw LLM result for keywords: {repr(result)}")
     result = remove_think_tags(result)
+    logger.info(f"[DEBUG] After remove_think_tags: {repr(result)}")
     try:
         keywords_data = json_repair.loads(result)
+        logger.info(f"[DEBUG] Parsed keywords_data: {keywords_data}")
         if not keywords_data:
             logger.error("No JSON-like structure found in the LLM respond.")
             return [], []
@@ -3411,6 +3415,10 @@ async def _get_vector_context(
         logger.info(
             f"Naive query: {len(valid_chunks)} chunks (chunk_top_k:{search_top_k} cosine:{cosine_threshold})"
         )
+        # DEBUG: Log top 5 vector chunks
+        if valid_chunks:
+            top5_info = [(c.get("chunk_id", "")[:30], c.get("content", "")[:60]) for c in valid_chunks[:5]]
+            logger.info(f"DEBUG: Top 5 vector chunks: {top5_info}")
         return valid_chunks
 
     except Exception as e:
@@ -3622,6 +3630,37 @@ async def _apply_token_truncation(
     final_entities = search_result["final_entities"]
     final_relations = search_result["final_relations"]
 
+    # Sort entities by rank (descending) to prioritize high-rank entities during truncation
+    # This ensures supplementary entities (rank boosted by +1000) survive truncation
+    final_entities = sorted(
+        final_entities,
+        key=lambda x: (
+            x.get("is_supplementary", False),  # Supplementary entities first
+            x.get("rank", 0),  # Then by rank
+        ),
+        reverse=True,
+    )
+    
+    # Log top entities for debugging
+    supplementary_count = sum(1 for e in final_entities if e.get("is_supplementary"))
+    top_entities_info = [
+        (e.get("entity_name", "")[:40], e.get("rank", 0), e.get("is_supplementary", False))
+        for e in final_entities[:10]
+    ]
+    logger.info(
+        f"Sorted entities: {len(final_entities)} total, {supplementary_count} supplementary. "
+        f"Top 10: {top_entities_info}"
+    )
+    
+    # Debug: Check for specific entities (Khoản 10 - Điều 23)
+    khoan_10_entities = [
+        (i, e.get("entity_name"), e.get("rank", 0), e.get("is_supplementary", False))
+        for i, e in enumerate(final_entities)
+        if "khoản 10" in e.get("entity_name", "").lower() and "điều 23" in e.get("entity_name", "").lower()
+    ]
+    if khoan_10_entities:
+        logger.info(f"DEBUG Khoản 10 - Điều 23 position after sort: {khoan_10_entities}")
+
     # Create mappings from entity/relation identifiers to original data
     entity_id_to_original = {}
     relation_id_to_original = {}
@@ -3731,6 +3770,11 @@ async def _apply_token_truncation(
                 filtered_entities.append(entity)
                 filtered_entity_id_to_original[name] = entity
                 seen_nodes.add(name)
+        
+        # Debug: Check if Khoản 10 is in filtered entities
+        khoan10_entities = [e for e in filtered_entities if "Khoản 10" in e.get("entity_name", "")]
+        if khoan10_entities:
+            logger.info(f"DEBUG: Khoản 10 in filtered_entities: {[(e.get('entity_name'), e.get('source_id'), e.get('is_supplementary'), e.get('is_direct_link')) for e in khoan10_entities]}")
 
     filtered_relations = []
     filtered_relation_id_to_original = {}
@@ -3758,6 +3802,190 @@ async def _apply_token_truncation(
     }
 
 
+def _parse_amendment_annotations(content: str) -> list[str]:
+    """
+    Parse amendment annotations from chunk content.
+    Returns list of amendment entity names found in annotations like:
+    [Điều này được bổ sung bởi Khoản 10 Điều 1 Luật Doanh nghiệp sửa đổi 2025]
+    [Điều này được sửa đổi bởi Khoản 5a Điều 1 ...]
+    """
+    amendment_entities = []
+    
+    # Pattern to match amendment annotations
+    # Matches: [Điều này được bổ sung/sửa đổi bởi Khoản X Điều Y Luật Z ...]
+    patterns = [
+        r'\[(?:Điều này|Khoản này|Điểm này) được (?:bổ sung|sửa đổi|thay thế) bởi (Khoản \d+\w*)\s+(Điều \d+)\s+([^\]]+?)\s*(?:có hiệu lực[^\]]*?)?\]',
+        r'\[(?:Điều này|Khoản này|Điểm này) được (?:bổ sung|sửa đổi|thay thế) bởi (Khoản \d+\w*)\s+([^\]]+?)\s*(?:có hiệu lực[^\]]*?)?\]',
+    ]
+    
+    for pattern in patterns:
+        matches = re.finditer(pattern, content, re.IGNORECASE)
+        for match in matches:
+            groups = match.groups()
+            if len(groups) >= 3:
+                # Format: Khoản X - Điều Y - Luật Z
+                khoan = groups[0].strip()
+                dieu = groups[1].strip()
+                luat = groups[2].strip()
+                entity_name = f"{khoan} - {dieu} - {luat}"
+            elif len(groups) >= 2:
+                # Format: Khoản X - Luật Y
+                khoan = groups[0].strip()
+                luat = groups[1].strip()
+                entity_name = f"{khoan} - {luat}"
+            else:
+                continue
+            
+            amendment_entities.append(entity_name)
+    
+    return amendment_entities
+
+
+async def _build_amendment_chunk_map(
+    all_chunks: list[dict],
+    filtered_entities: list[dict],
+    text_chunks_db: BaseKVStorage = None,
+    entity_chunks_db: BaseKVStorage = None,
+    all_source_chunks: list[dict] = None,
+) -> dict[str, list[dict]]:
+    """
+    Build a map from main chunk_id to list of amendment chunks.
+    For each chunk with amendment annotations, find the chunks of the referenced entities.
+    """
+    chunk_to_amendments = {}
+    
+    if not text_chunks_db:
+        return chunk_to_amendments
+    
+    # Build entity name to chunks map - prefer from entity_chunks_db for complete chunk_ids
+    entity_to_chunks = {}
+    
+    # First, try to get all chunk_ids from entity_chunks_db
+    if entity_chunks_db:
+        for entity in filtered_entities:
+            entity_name = entity.get("entity_name", "")
+            if entity_name:
+                try:
+                    entity_chunk_data = await entity_chunks_db.get_by_id(entity_name)
+                    if entity_chunk_data and "chunk_ids" in entity_chunk_data:
+                        entity_to_chunks[entity_name] = entity_chunk_data["chunk_ids"]
+                except Exception:
+                    pass
+    
+    # Fallback: use source_id from filtered_entities if entity_chunks_db not available
+    if not entity_to_chunks:
+        for entity in filtered_entities:
+            entity_name = entity.get("entity_name", "")
+            source_id = entity.get("source_id", "")
+            if entity_name and source_id:
+                if entity_name not in entity_to_chunks:
+                    entity_to_chunks[entity_name] = []
+                entity_to_chunks[entity_name].append(source_id)
+    
+    # Debug: Log entity_to_chunks for Khoản 10
+    khoan10_entities = {k: v for k, v in entity_to_chunks.items() if "khoản 10" in k.lower()}
+    if khoan10_entities:
+        logger.info(f"DEBUG: entity_to_chunks for Khoản 10: {khoan10_entities}")
+    
+    # For each chunk, parse annotations and find amendment chunks
+    for chunk in all_chunks:
+        chunk_id = chunk.get("chunk_id") or chunk.get("id")
+        content = chunk.get("content", "")
+        
+        # Debug: Check if this is Điều 23 chunk
+        if chunk_id and "f39190da" in chunk_id:
+            logger.info(f"DEBUG: Processing Điều 23 chunk {chunk_id[:20]}, content[:100]={content[:100] if content else 'EMPTY'}")
+        
+        if not chunk_id or not content:
+            continue
+        
+        # Parse amendment annotations
+        amendment_entity_names = _parse_amendment_annotations(content)
+        
+        if amendment_entity_names:
+            logger.info(f"DEBUG: Chunk {chunk_id[:20]} has amendment annotations: {amendment_entity_names}")
+        
+        for entity_name in amendment_entity_names:
+            # Extract "Khoản X" from entity name for precise matching
+            khoan_match = re.search(r'Khoản\s+(\d+[a-z]?)', entity_name, re.IGNORECASE)
+            dieu_match = re.search(r'Điều\s+(\d+)', entity_name, re.IGNORECASE)
+            khoan_num = khoan_match.group(1) if khoan_match else None
+            dieu_num = dieu_match.group(1) if dieu_match else None
+            
+            logger.info(f"DEBUG: Looking for amendment khoan={khoan_num}, dieu={dieu_num}")
+            
+            # Try to find matching entity with EXACT Khoản number
+            matched_chunks = []
+            
+            for ent_name, chunk_ids in entity_to_chunks.items():
+                # Entity must have same Khoản number if specified
+                if khoan_num:
+                    ent_khoan_match = re.search(r'Khoản\s+(\d+[a-z]?)', ent_name, re.IGNORECASE)
+                    if ent_khoan_match:
+                        ent_khoan_num = ent_khoan_match.group(1)
+                        if ent_khoan_num.lower() == khoan_num.lower():
+                            matched_chunks.extend(chunk_ids)
+                            logger.info(f"DEBUG: EXACT Khoản match entity '{ent_name}' with chunks {chunk_ids[:3]}")
+            
+            # If no exact Khoản match found, try content-based search
+            if not matched_chunks and khoan_num and dieu_num and all_source_chunks:
+                logger.info(f"DEBUG: No entity match, searching by content for Khoản {khoan_num} Điều {dieu_num}")
+                # Search through all source chunks for amendment content
+                for src_chunk in all_source_chunks:
+                    src_chunk_id = src_chunk.get("chunk_id", "")
+                    src_content = src_chunk.get("content", "")
+                    
+                    # Skip self
+                    if src_chunk_id == chunk_id:
+                        continue
+                    
+                    # Pattern: "Khoản X. Bổ sung khoản X ... Điều Y"
+                    pattern1 = rf'Khoản\s+{khoan_num}[.:]?\s+Bổ sung.*?Điều\s+{dieu_num}'
+                    pattern2 = rf'Điều\s+1[.:]?.*?Khoản\s+{khoan_num}[.:]?\s+Bổ sung.*?Điều\s+{dieu_num}'
+                    
+                    if re.search(pattern1, src_content, re.IGNORECASE | re.DOTALL) or re.search(pattern2, src_content, re.IGNORECASE | re.DOTALL):
+                        matched_chunks.append(src_chunk_id)
+                        logger.info(f"DEBUG: Content match found in chunk {src_chunk_id[:20]}")
+                        break  # Take first match
+            
+            if matched_chunks:
+                # Get chunk contents - now filter to only use chunks containing actual amendment content
+                for amendment_chunk_id in matched_chunks:
+                    # Skip if amendment chunk is the same as main chunk
+                    if amendment_chunk_id == chunk_id:
+                        continue
+                    
+                    try:
+                        chunk_data = await text_chunks_db.get_by_id(amendment_chunk_id)
+                        if chunk_data:
+                            amendment_content = chunk_data.get("content", "")
+                            
+                            # Verify this chunk actually contains the amendment content (Khoản X)
+                            if khoan_num:
+                                verify_pattern = rf'Khoản\s+{khoan_num}[.:\s]'
+                                if not re.search(verify_pattern, amendment_content, re.IGNORECASE):
+                                    logger.info(f"DEBUG: Skipping chunk {amendment_chunk_id[:20]} - doesn't contain Khoản {khoan_num}")
+                                    continue
+                            
+                            if chunk_id not in chunk_to_amendments:
+                                chunk_to_amendments[chunk_id] = []
+                            
+                            # Avoid duplicates
+                            existing_ids = [c.get("chunk_id") for c in chunk_to_amendments[chunk_id]]
+                            if amendment_chunk_id not in existing_ids:
+                                chunk_to_amendments[chunk_id].append({
+                                    "chunk_id": amendment_chunk_id,
+                                    "content": amendment_content,
+                                    "file_path": chunk_data.get("file_path", "unknown_source"),
+                                    "is_amendment": True,
+                                })
+                                logger.info(f"DEBUG: Mapped amendment chunk {amendment_chunk_id[:20]} to main chunk {chunk_id[:20]}")
+                    except Exception as e:
+                        logger.debug(f"Failed to get amendment chunk {amendment_chunk_id}: {e}")
+    
+    return chunk_to_amendments
+
+
 async def _merge_all_chunks(
     filtered_entities: list[dict],
     filtered_relations: list[dict],
@@ -3769,6 +3997,7 @@ async def _merge_all_chunks(
     chunks_vdb: BaseVectorStorage = None,
     chunk_tracking: dict = None,
     query_embedding: list[float] = None,
+    entity_chunks_db: BaseKVStorage = None,
 ) -> list[dict]:
     """
     Merge chunks from different sources: vector_chunks + entity_chunks + relation_chunks.
@@ -3804,9 +4033,148 @@ async def _merge_all_chunks(
             query_embedding=query_embedding,
         )
 
-    # Round-robin merge chunks from different sources with deduplication
+    # Build amendment chunk map - maps main chunk_id to amendment chunks
+    all_source_chunks = vector_chunks + entity_chunks + relation_chunks
+    amendment_chunk_map = await _build_amendment_chunk_map(
+        all_source_chunks, filtered_entities, text_chunks_db, entity_chunks_db, all_source_chunks
+    )
+    if amendment_chunk_map:
+        logger.info(f"Built amendment chunk map with {len(amendment_chunk_map)} main chunks having amendments")
+
+    # Helper function to inject amendment chunks after a main chunk
+    def inject_amendment_chunks(main_chunk_id: str, merged_chunks: list, seen_chunk_ids: set) -> int:
+        """Inject amendment chunks right after the main chunk. Returns count of added chunks."""
+        added = 0
+        if main_chunk_id in amendment_chunk_map:
+            for amend_chunk in amendment_chunk_map[main_chunk_id]:
+                amend_id = amend_chunk.get("chunk_id")
+                if amend_id and amend_id not in seen_chunk_ids:
+                    seen_chunk_ids.add(amend_id)
+                    merged_chunks.append({
+                        "content": amend_chunk["content"],
+                        "file_path": amend_chunk.get("file_path", "unknown_source"),
+                        "chunk_id": amend_id,
+                        "is_priority": True,
+                        "is_amendment": True,
+                        "source": "amendment_injection",
+                    })
+                    added += 1
+                    logger.info(f"DEBUG: Injected amendment chunk {amend_id[:20]} after main chunk {main_chunk_id[:20]}")
+        return added
+
+    # FIRST: Add TOP vector chunks as high priority (for mix mode - naive retrieval)
+    # These are the most relevant chunks from pure vector similarity search
     merged_chunks = []
     seen_chunk_ids = set()
+    priority_count = 0
+    vector_priority_count = 0
+    amendment_injection_count = 0
+    
+    # Add top 10 vector chunks FIRST (they have highest similarity to query)
+    TOP_VECTOR_PRIORITY = 10
+    for chunk in vector_chunks[:TOP_VECTOR_PRIORITY]:
+        chunk_id = chunk.get("chunk_id") or chunk.get("id")
+        if chunk_id and chunk_id not in seen_chunk_ids:
+            seen_chunk_ids.add(chunk_id)
+            merged_chunks.append(
+                {
+                    "content": chunk["content"],
+                    "file_path": chunk.get("file_path", "unknown_source"),
+                    "chunk_id": chunk_id,
+                    "is_priority": True,
+                    "source": "vector_top",
+                }
+            )
+            vector_priority_count += 1
+            
+            # Inject amendment chunks right after this main chunk
+            amendment_injection_count += inject_amendment_chunks(chunk_id, merged_chunks, seen_chunk_ids)
+    
+    if vector_priority_count > 0:
+        logger.info(f"Added {vector_priority_count} top vector chunks as HIGH priority (with {amendment_injection_count} amendment injections)")
+    
+    # THEN: Add priority chunks from entity_chunks (from supplementary entities)
+    # Sort priority chunks by entity_rank (highest first) to ensure high-rank entities' chunks come first
+    # Add secondary sort by: 1) has relation annotations [], 2) query relevance
+    priority_entity_chunks = [c for c in entity_chunks if c.get("is_priority")]
+    
+    # Extract keywords from query for relevance scoring
+    query_keywords = set(query.lower().split()) if query else set()
+    
+    def sort_key(chunk):
+        entity_rank = chunk.get("entity_rank", 0)
+        content = chunk.get("content", "").lower()
+        
+        # Priority 1: Check if chunk has relation annotations [] - these are more important
+        # Chunks with [] contain references to other legal clauses
+        has_relation_annotation = 1 if re.search(r'\[[^\]]+\]', content) else 0
+        
+        # Priority 1b: Check if chunk IS an amendment/supplement content
+        # These chunks contain the actual new content added by amendments
+        amendment_patterns = [
+            r'bổ sung khoản',
+            r'sửa đổi khoản', 
+            r'thay thế khoản',
+            r'bổ sung điểm',
+            r'sửa đổi điểm',
+            r'bổ sung điều',
+            r'sửa đổi điều',
+        ]
+        is_amendment_content = 1 if any(re.search(p, content) for p in amendment_patterns) else 0
+        
+        # Combine: either has bracket annotation OR is amendment content
+        has_priority_marker = max(has_relation_annotation, is_amendment_content)
+        
+        # Priority 2: Calculate keyword match score
+        keyword_match = sum(1 for kw in query_keywords if kw in content and len(kw) > 2)
+        
+        # Return tuple: (entity_rank, has_priority_marker, keyword_match) - all descending
+        return (entity_rank, has_priority_marker, keyword_match)
+    
+    priority_entity_chunks.sort(key=sort_key, reverse=True)
+    
+    # Debug: Check if Khoản 5a chunk is in priority_entity_chunks
+    khoan5a_in_priority = [c for c in priority_entity_chunks if "ffacaa2e" in str(c.get("chunk_id", "") or c.get("id", ""))]
+    if khoan5a_in_priority:
+        chunk = khoan5a_in_priority[0]
+        content = chunk.get("content", "")
+        has_bracket = 1 if re.search(r'\[[^\]]+\]', content) else 0
+        logger.info(f"DEBUG: Khoản 5a chunk ffacaa2e in priority_entity_chunks, entity_rank={chunk.get('entity_rank', 0)}, has_bracket={has_bracket}")
+    else:
+        logger.info(f"DEBUG: Khoản 5a chunk ffacaa2e NOT in priority_entity_chunks")
+    
+    # Debug: Show top 20 priority chunks with entity_rank
+    for i, chunk in enumerate(priority_entity_chunks[:20]):
+        chunk_id = chunk.get("chunk_id", "") or chunk.get("id", "")
+        entity_rank = chunk.get("entity_rank", 0)
+        content = chunk.get("content", "")
+        has_bracket = 1 if re.search(r'\[[^\]]+\]', content) else 0
+        logger.info(f"DEBUG: Priority chunk #{i+1}: rank={entity_rank}, bracket={has_bracket}, id={chunk_id[:30]}...")
+    
+    for chunk in priority_entity_chunks:
+        chunk_id = chunk.get("chunk_id") or chunk.get("id")
+        if chunk_id and chunk_id not in seen_chunk_ids:
+            seen_chunk_ids.add(chunk_id)
+            merged_chunks.append(
+                {
+                    "content": chunk["content"],
+                    "file_path": chunk.get("file_path", "unknown_source"),
+                    "chunk_id": chunk_id,
+                    "is_priority": True,
+                }
+            )
+            priority_count += 1
+            # Debug: Check if this is Khoản 10 chunk
+            if "f5c8b3c5" in chunk_id:
+                logger.info(f"DEBUG: Added Khoản 10 chunk f5c8b3c5 to merged_chunks at position {len(merged_chunks)}, entity_rank={chunk.get('entity_rank', 0)}, content[:100]={chunk.get('content', '')[:100]}")
+            # Debug: Check if this is Khoản 5a chunk
+            if "ffacaa2e" in chunk_id:
+                logger.info(f"DEBUG: Added Khoản 5a chunk ffacaa2e to merged_chunks at position {len(merged_chunks)}, entity_rank={chunk.get('entity_rank', 0)}, content[:100]={chunk.get('content', '')[:100]}")
+    
+    if priority_count > 0:
+        logger.info(f"Added {priority_count} priority chunks from supplementary entities (sorted by entity_rank)")
+    
+    # THEN: Round-robin merge remaining chunks from different sources with deduplication
     max_len = max(len(vector_chunks), len(entity_chunks), len(relation_chunks))
     origin_len = len(vector_chunks) + len(entity_chunks) + len(relation_chunks)
 
@@ -3825,19 +4193,20 @@ async def _merge_all_chunks(
                     }
                 )
 
-        # Add from entity chunks (Local mode)
+        # Add from entity chunks (Local mode) - skip priority ones (already added)
         if i < len(entity_chunks):
             chunk = entity_chunks[i]
-            chunk_id = chunk.get("chunk_id") or chunk.get("id")
-            if chunk_id and chunk_id not in seen_chunk_ids:
-                seen_chunk_ids.add(chunk_id)
-                merged_chunks.append(
-                    {
-                        "content": chunk["content"],
-                        "file_path": chunk.get("file_path", "unknown_source"),
-                        "chunk_id": chunk_id,
-                    }
-                )
+            if not chunk.get("is_priority"):  # Skip priority chunks (already added)
+                chunk_id = chunk.get("chunk_id") or chunk.get("id")
+                if chunk_id and chunk_id not in seen_chunk_ids:
+                    seen_chunk_ids.add(chunk_id)
+                    merged_chunks.append(
+                        {
+                            "content": chunk["content"],
+                            "file_path": chunk.get("file_path", "unknown_source"),
+                            "chunk_id": chunk_id,
+                        }
+                    )
 
         # Add from relation chunks (Global mode)
         if i < len(relation_chunks):
@@ -3854,7 +4223,7 @@ async def _merge_all_chunks(
                 )
 
     logger.info(
-        f"Round-robin merged chunks: {origin_len} -> {len(merged_chunks)} (deduplicated {origin_len - len(merged_chunks)})"
+        f"Round-robin merged chunks: {origin_len} -> {len(merged_chunks)} (priority={priority_count}, deduplicated {origin_len - len(merged_chunks)})"
     )
 
     return merged_chunks
@@ -3941,9 +4310,10 @@ async def _build_context_str(
         sys_prompt_tokens + kg_context_tokens + query_tokens + buffer_tokens
     )
 
-    logger.debug(
+    logger.info(
         f"Token allocation - Total: {max_total_tokens}, SysPrompt: {sys_prompt_tokens}, Query: {query_tokens}, KG: {kg_context_tokens}, Buffer: {buffer_tokens}, Available for chunks: {available_chunk_tokens}"
     )
+    logger.info(f"DEBUG: Input merged_chunks count: {len(merged_chunks)}")
 
     # Apply token truncation to chunks using the dynamic limit
     truncated_chunks = await process_chunks_unified(
@@ -3954,6 +4324,32 @@ async def _build_context_str(
         source_type=query_param.mode,
         chunk_token_limit=available_chunk_tokens,  # Pass dynamic limit
     )
+    
+    logger.info(f"DEBUG: Output truncated_chunks count: {len(truncated_chunks)}")
+    
+    # Check if Khoản 10 chunk is in truncated_chunks
+    khoan10_chunks = [c for c in truncated_chunks if 'chủ sở hữu hưởng lợi' in c.get('content', '').lower() or 'beneficial owner' in c.get('content', '').lower()]
+    if khoan10_chunks:
+        logger.info(f"DEBUG: Khoản 10 chunks in truncated: {len(khoan10_chunks)}")
+    else:
+        # Check in merged_chunks
+        khoan10_merged = [c for c in merged_chunks if 'chủ sở hữu hưởng lợi' in c.get('content', '').lower() or 'bổ sung khoản 10' in c.get('content', '').lower()]
+        logger.info(f"DEBUG: Khoản 10 chunks in MERGED: {len(khoan10_merged)}, but NOT in truncated")
+        if khoan10_merged:
+            for c in khoan10_merged[:2]:
+                logger.info(f"DEBUG: Khoản 10 merged chunk: {c.get('chunk_id', '?')[:20]}, priority={c.get('is_priority')}")
+    
+    # Check if Khoản 5a chunk is in truncated_chunks
+    khoan5a_truncated = [c for c in truncated_chunks if 'ffacaa2e' in str(c.get('chunk_id', ''))]
+    if khoan5a_truncated:
+        logger.info(f"DEBUG: Khoản 5a chunk ffacaa2e IN truncated_chunks")
+    else:
+        khoan5a_merged = [c for c in merged_chunks if 'ffacaa2e' in str(c.get('chunk_id', ''))]
+        if khoan5a_merged:
+            pos = merged_chunks.index(khoan5a_merged[0]) if khoan5a_merged else -1
+            logger.info(f"DEBUG: Khoản 5a chunk ffacaa2e in MERGED at position {pos}, but NOT in truncated")
+        else:
+            logger.info(f"DEBUG: Khoản 5a chunk ffacaa2e NOT in merged_chunks")
 
     # Generate reference list from truncated chunks using the new common function
     reference_list, truncated_chunks = generate_reference_list_from_chunks(
@@ -4212,6 +4608,23 @@ async def _get_node_data(
         knowledge_graph_inst,
     )
 
+    # Multi-hop traversal: expand to find connected entities if hop_depth > 1
+    hop_depth = getattr(query_param, "hop_depth", 1)
+    if hop_depth > 1 and use_relations:
+        expanded_entities, expanded_relations = await _expand_entities_by_hop(
+            initial_entities=node_datas,
+            initial_relations=use_relations,
+            knowledge_graph_inst=knowledge_graph_inst,
+            query_param=query_param,
+            current_depth=1,
+            max_depth=hop_depth,
+        )
+        node_datas = expanded_entities
+        use_relations = expanded_relations
+        logger.info(
+            f"After {hop_depth}-hop expansion: {len(node_datas)} entities, {len(use_relations)} relations"
+        )
+
     logger.info(
         f"Local query: {len(node_datas)} entites, {len(use_relations)} relations"
     )
@@ -4219,6 +4632,410 @@ async def _get_node_data(
     # Entities are sorted by cosine similarity
     # Relations are sorted by rank + weight
     return node_datas, use_relations
+
+
+async def _expand_entities_by_hop(
+    initial_entities: list[dict],
+    initial_relations: list[dict],
+    knowledge_graph_inst: BaseGraphStorage,
+    query_param: QueryParam,
+    current_depth: int,
+    max_depth: int,
+    query_entity_names: set[str] = None,  # Track entities from original query for higher priority
+) -> tuple[list[dict], list[dict]]:
+    """
+    Expand entities by traversing the knowledge graph for multi-hop retrieval.
+
+    This is useful for legal/regulatory domains where:
+    - An amendment (Khoản 10 sửa đổi 2025) supplements an original article (Điều 23)
+    - The query finds "Điều 23" but needs to also include the amendment
+
+    Args:
+        initial_entities: Currently collected entities
+        initial_relations: Currently collected relations
+        knowledge_graph_inst: Graph storage instance
+        query_param: Query parameters
+        current_depth: Current traversal depth (1-based)
+        max_depth: Maximum traversal depth
+        query_entity_names: Set of entity names from original query (for priority boost)
+
+    Returns:
+        Expanded list of entities and relations
+    """
+    if current_depth >= max_depth:
+        return initial_entities, initial_relations
+
+    # Initialize query_entity_names on first call (depth=1)
+    # These are the entities directly found from the query, they get highest priority
+    if query_entity_names is None:
+        query_entity_names = {e["entity_name"] for e in initial_entities}
+        logger.debug(f"Hop {current_depth + 1}: Tracking {len(query_entity_names)} query entities for priority boost")
+
+    seen_entity_names = {e["entity_name"] for e in initial_entities}
+    seen_relation_pairs = {r["src_tgt"] for r in initial_relations}
+
+    all_entities = list(initial_entities)
+    all_relations = list(initial_relations)
+
+    # Find entities connected via relations but not yet in our entity list
+    # Also identify "supplementary" relations (bổ sung, sửa đổi, thay thế, etc.)
+    new_entity_names = set()
+    supplementary_entity_names = set()  # Entities connected via supplementary relations
+    direct_query_linked_entities = set()  # Entities directly linked to query entities (highest priority)
+    
+    # Keywords indicating supplementary/amendment relations (lowercase for matching)
+    # Include both singular and plural forms, and Vietnamese equivalents
+    supplementary_keywords = [
+        "bổ sung", "sửa đổi", "thay thế", "điều chỉnh", "cập nhật",
+        "supplement", "supplements", "amend", "amends", "amended",
+        "replace", "replaces", "modify", "modifies", "modified",
+        "update", "updates", "revise", "revises", "revised",
+        "add", "adds", "added", "change", "changes", "changed",
+        "luật sửa đổi"
+    ]
+    
+    # Keywords indicating parent-child legal structure (Điều → Khoản → Điểm)
+    # These should also be prioritized when traversing legal documents
+    parent_child_keywords = [
+        "is part of", "part of", "belongs to", "thuộc về", "thuộc", 
+        "nằm trong", "quy định tại", "specified in", "stipulates"
+    ]
+    
+    # Track relations that link to Khoản 10 or Điều 23 for debugging
+    khoan_10_relations = []
+    dieu_23_relations = []
+    
+    for relation in initial_relations:
+        src, tgt = relation["src_tgt"]
+        description = relation.get("description", "").lower()
+        
+        # Debug: Check for Khoản 10 related relations
+        if "khoản 10" in src.lower() or "khoản 10" in tgt.lower():
+            khoan_10_relations.append((src, tgt, description[:100]))
+        
+        # Debug: Check for Điều 23 related relations
+        if "điều 23" in src.lower() or "điều 23" in tgt.lower():
+            dieu_23_relations.append((src, tgt, description[:100]))
+        
+        # Check if this is a supplementary relation
+        is_supplementary = any(kw in description for kw in supplementary_keywords)
+        
+        # Also check for parent-child legal relations (Khoản is part of Điều)
+        is_parent_child = any(kw in description for kw in parent_child_keywords)
+        
+        # Check if this relation links to a query entity (highest priority)
+        src_is_query = src in query_entity_names
+        tgt_is_query = tgt in query_entity_names
+        
+        if src not in seen_entity_names:
+            new_entity_names.add(src)
+            if is_supplementary or is_parent_child:
+                supplementary_entity_names.add(src)
+                # DON'T mark as direct_query_linked at HOP 1 (current_depth=1)
+                # At HOP 1, there are too many parent-child relations from initial entities
+                # Wait until HOP 2+ where relations come from expanded entities (like Điều 23)
+                # This is handled in the new_relations processing section below
+        if tgt not in seen_entity_names:
+            new_entity_names.add(tgt)
+            if is_supplementary or is_parent_child:
+                supplementary_entity_names.add(tgt)
+                # DON'T mark at HOP 1, same reason as above
+    
+    # Log if we found any Khoản 10 or Điều 23 related relations
+    if khoan_10_relations:
+        logger.info(f"Hop {current_depth + 1}: Found {len(khoan_10_relations)} relations involving Khoản 10: {khoan_10_relations[:3]}")
+    if dieu_23_relations:
+        logger.info(f"Hop {current_depth + 1}: Found {len(dieu_23_relations)} relations involving Điều 23: {dieu_23_relations[:3]}")
+    
+    # Log direct query linked entities (highest priority)
+    if direct_query_linked_entities:
+        logger.info(f"Hop {current_depth + 1}: Found {len(direct_query_linked_entities)} entities DIRECTLY linked to query entities")
+    
+    # Log total initial_relations count for debugging
+    logger.debug(f"Hop {current_depth + 1}: Processing {len(initial_relations)} initial relations to find new entities")
+
+    if not new_entity_names:
+        return all_entities, all_relations
+
+    # Fetch data for new entities
+    new_entity_names_list = list(new_entity_names)
+    nodes_dict, degrees_dict = await asyncio.gather(
+        knowledge_graph_inst.get_nodes_batch(new_entity_names_list),
+        knowledge_graph_inst.node_degrees_batch(new_entity_names_list),
+    )
+
+    new_entities = []
+    supplementary_entities = []  # High-priority entities from supplementary relations
+    
+    for name in new_entity_names_list:
+        node_data = nodes_dict.get(name)
+        if node_data:
+            # Boost rank for supplementary entities to prioritize them in truncation
+            base_rank = degrees_dict.get(name, 0)
+            is_supplementary = name in supplementary_entity_names
+            is_direct_link = name in direct_query_linked_entities  # Check if directly linked to query entity
+            
+            # Apply higher boost for entities directly linked to query entities
+            # Using 2000 to ensure they rank reasonably high but not dominate everything
+            if is_direct_link:
+                boost = 2000  # High priority - parent-child link to existing/query entity
+            elif is_supplementary:
+                boost = 1000  # Medium priority - supplementary relation
+            else:
+                boost = 0
+            
+            entity = {
+                **node_data,
+                "entity_name": name,
+                "rank": base_rank + boost,
+                "hop_level": current_depth + 1,
+                "is_supplementary": is_supplementary or is_direct_link,  # Treat direct links as supplementary for sorting
+                "is_direct_link": is_direct_link,  # Keep this flag for chunk prioritization
+            }
+            
+            # Debug log for Khoản 10
+            if "Khoản 10" in name:
+                logger.debug(f"Creating entity '{name}': base_rank={base_rank}, is_supplementary={is_supplementary}, is_direct_link={is_direct_link}, boost={boost}, final_rank={entity['rank']}")
+            
+            if is_supplementary or is_direct_link:
+                supplementary_entities.append(entity)
+            else:
+                new_entities.append(entity)
+            seen_entity_names.add(name)
+
+    # Insert supplementary entities right after initial entities (higher priority)
+    # This ensures they survive truncation better
+    if supplementary_entities:
+        logger.info(
+            f"Hop {current_depth + 1}: Found {len(supplementary_entities)} supplementary entities: "
+            f"{[e['entity_name'] for e in supplementary_entities[:5]]}..."
+        )
+        # Insert supplementary entities at a position that gives them better survival chance
+        insert_position = min(len(all_entities), query_param.top_k // 2)
+        for i, entity in enumerate(supplementary_entities):
+            all_entities.insert(insert_position + i, entity)
+    
+    # Add regular new entities at the end
+    all_entities.extend(new_entities)
+
+    # Find new relations from the newly discovered entities
+    all_new_entities = supplementary_entities + new_entities
+    if all_new_entities:
+        new_node_datas = [{"entity_name": e["entity_name"]} for e in all_new_entities]
+        
+        # Debug: Log if Điều 23 is in new entities
+        dieu_23_in_new = [e["entity_name"] for e in all_new_entities if "điều 23" in e["entity_name"].lower()]
+        if dieu_23_in_new:
+            logger.info(f"Hop {current_depth + 1}: Fetching relations for Điều 23 entities: {dieu_23_in_new}")
+        
+        new_relations_raw = await _find_most_related_edges_from_entities(
+            new_node_datas,
+            query_param,
+            knowledge_graph_inst,
+        )
+        
+        # Debug: Log Điều 23 relations found
+        dieu_23_new_relations = [(r["src_tgt"], r.get("description", "")[:80]) for r in new_relations_raw 
+                                  if any("điều 23" in str(s).lower() for s in r["src_tgt"])]
+        if dieu_23_new_relations:
+            logger.info(f"Hop {current_depth + 1}: New relations of Điều 23: {dieu_23_new_relations[:5]}")
+
+        # Separate supplementary relations from regular relations
+        # Also track entities that should be boosted due to supplementary relations
+        supplementary_relations = []
+        regular_relations = []
+        entities_to_boost = set()  # Entity names that should be boosted
+        
+        for rel in new_relations_raw:
+            src, tgt = rel["src_tgt"]
+            description = rel.get("description", "").lower()
+            
+            # Debug: Check if this is the Khoản 10 - Điều 23 relation
+            is_khoan_10_rel = ("khoản 10" in src.lower() and "điều 23" in src.lower()) or ("khoản 10" in tgt.lower() and "điều 23" in tgt.lower())
+            if is_khoan_10_rel:
+                in_seen = rel["src_tgt"] in seen_relation_pairs
+                logger.info(f"DEBUG: Found Khoản 10 relation: {src} <-> {tgt}, already_seen={in_seen}, desc={description[:80]}")
+            
+            if rel["src_tgt"] not in seen_relation_pairs:
+                is_supplementary = any(kw in description for kw in supplementary_keywords)
+                is_parent_child = any(kw in description for kw in parent_child_keywords)
+                
+                # Check if connected to query entity OR existing entity (high priority)
+                # query_entity_names: entities from original query (highest priority)
+                # seen_entity_names: entities already collected (high priority for parent-child)
+                src_is_query = src in query_entity_names
+                tgt_is_query = tgt in query_entity_names
+                src_is_existing = src in seen_entity_names
+                tgt_is_existing = tgt in seen_entity_names
+                
+                if is_supplementary or is_parent_child:
+                    # Boost weight for supplementary/parent-child relations
+                    rel["weight"] = rel.get("weight", 1.0) + 100
+                    supplementary_relations.append(rel)
+                    # Track entities from this relation for boosting
+                    entities_to_boost.add(src)
+                    entities_to_boost.add(tgt)
+                    
+                    # Mark as direct_query_linked if it's a supplementary relation
+                    # This ensures entities like "Khoản 10" (added by amendment) get high priority
+                    # We no longer require "not in seen_entity_names" because we want to boost
+                    # entities even if they were discovered earlier through other relations
+                    if is_supplementary:
+                        direct_query_linked_entities.add(src)
+                        direct_query_linked_entities.add(tgt)
+                        logger.debug(f"Adding '{src}', '{tgt}' to direct_query_linked (SUPPLEMENTARY relation)")
+                    
+                    # Debug: log when Khoản 10 - Điều 23 is added to boost list
+                    if "khoản 10" in src.lower() and "điều 23" in src.lower():
+                        # Extra debug for Khoản 10 relation
+                        logger.info(f"DEBUG Khoản 10 relation details: src='{src}', tgt='{tgt}', src_in_seen={src in seen_entity_names}, tgt_in_seen={tgt in seen_entity_names}, is_parent={is_parent_child}, is_supp={is_supplementary}")
+                        logger.info(f"DEBUG: Adding '{src}' to entities_to_boost (is_supp={is_supplementary}, is_parent={is_parent_child}, in_direct_query={src in direct_query_linked_entities})")
+                    if "khoản 10" in tgt.lower() and "điều 23" in tgt.lower():
+                        logger.info(f"DEBUG: Adding '{tgt}' to entities_to_boost (is_supp={is_supplementary}, is_parent={is_parent_child}, in_direct_query={tgt in direct_query_linked_entities})")
+                    
+                    # Debug: log when Khoản 5a - Điều 8 is processed
+                    if "khoản 5a" in src.lower() or "khoản 5a" in tgt.lower():
+                        logger.info(f"DEBUG Khoản 5a relation: src='{src}', tgt='{tgt}', is_supp={is_supplementary}, is_parent={is_parent_child}, src_in_direct={src in direct_query_linked_entities}, tgt_in_direct={tgt in direct_query_linked_entities}")
+                else:
+                    regular_relations.append(rel)
+                seen_relation_pairs.add(rel["src_tgt"])
+        
+        # Debug: Check if Khoản 10 - Điều 23 is in entities_to_boost
+        khoan_10_dieu_23_in_boost = [e for e in entities_to_boost if "khoản 10" in e.lower() and "điều 23" in e.lower()]
+        if khoan_10_dieu_23_in_boost:
+            logger.info(f"DEBUG: Khoản 10 - Điều 23 entities in boost list: {khoan_10_dieu_23_in_boost}")
+        
+        # Debug: Check if Khoản 10 - Điều 23 is in direct_query_linked_entities
+        khoan_10_direct = [e for e in direct_query_linked_entities if "khoản 10" in e.lower() and "điều 23" in e.lower()]
+        if khoan_10_direct:
+            logger.info(f"DEBUG: Khoản 10 - Điều 23 in DIRECT QUERY LINKED list: {khoan_10_direct}")
+        
+        # Boost entities that are connected via supplementary relations
+        # Move them to higher priority positions in the entity list
+        # Also add NEW entities that were discovered from supplementary relations
+        if entities_to_boost:
+            # Find entities that are NOT yet in all_entities
+            existing_entity_names = {e.get("entity_name", "") for e in all_entities}
+            new_entity_names_from_relations = entities_to_boost - existing_entity_names
+            
+            # Debug: Check if Khoản 10 - Điều 23 is a new entity or already exists
+            khoan_10_in_existing = [e for e in existing_entity_names if "khoản 10" in e.lower() and "điều 23" in e.lower()]
+            khoan_10_in_new = [e for e in new_entity_names_from_relations if "khoản 10" in e.lower() and "điều 23" in e.lower()]
+            if khoan_10_in_existing:
+                logger.info(f"DEBUG: Khoản 10 - Điều 23 ALREADY EXISTS in all_entities: {khoan_10_in_existing}")
+            if khoan_10_in_new:
+                logger.info(f"DEBUG: Khoản 10 - Điều 23 will be ADDED as NEW entity: {khoan_10_in_new}")
+            
+            # Fetch data for new entities from supplementary relations
+            if new_entity_names_from_relations:
+                new_names_list = list(new_entity_names_from_relations)
+                new_nodes_dict, new_degrees_dict = await asyncio.gather(
+                    knowledge_graph_inst.get_nodes_batch(new_names_list),
+                    knowledge_graph_inst.node_degrees_batch(new_names_list),
+                )
+                
+                new_supplementary_entities = []
+                for name in new_names_list:
+                    node_data = new_nodes_dict.get(name)
+                    if node_data:
+                        is_direct_link = name in direct_query_linked_entities  # Check if directly linked to query entity
+                        boost = 3000 if is_direct_link else 1000  # 3000 for direct links (parent-child of query entities)
+                        entity = {
+                            **node_data,
+                            "entity_name": name,
+                            "rank": new_degrees_dict.get(name, 0) + boost,
+                            "hop_level": current_depth + 1,
+                            "is_supplementary": True,
+                            "is_direct_link": is_direct_link,  # Keep this flag for chunk prioritization
+                        }
+                        new_supplementary_entities.append(entity)
+                        seen_entity_names.add(name)
+                        # Debug: log when Khoản 10 - Điều 23 is added
+                        if "khoản 10" in name.lower() and "điều 23" in name.lower():
+                            logger.info(f"DEBUG: Adding entity '{name}' with rank={entity['rank']}, is_direct_link={is_direct_link}, boost={boost}")
+                
+                if new_supplementary_entities:
+                    logger.info(
+                        f"Hop {current_depth + 1}: Adding {len(new_supplementary_entities)} NEW entities from supplementary relations: "
+                        f"{[e['entity_name'] for e in new_supplementary_entities[:5]]}..."
+                    )
+                    # Insert at high priority position
+                    insert_pos = min(len(all_entities), query_param.top_k // 2)
+                    for i, entity in enumerate(new_supplementary_entities):
+                        all_entities.insert(insert_pos + i, entity)
+            
+            # Now boost existing entities
+            boosted_entities = []
+            remaining_entities = []
+            for entity in all_entities:
+                entity_name = entity.get("entity_name", "")
+                if entity_name in entities_to_boost:
+                    # Check if directly linked to query entities (SUPPLEMENTARY relations)
+                    is_direct_link = entity_name in direct_query_linked_entities
+                    new_boost = 3000 if is_direct_link else 1000
+                    
+                    # Already boosted before?
+                    already_boosted = entity.get("is_supplementary", False)
+                    current_is_direct = entity.get("is_direct_link", False)
+                    
+                    # Update if:
+                    # 1. Not boosted yet, OR
+                    # 2. Now is direct_link but wasn't before (upgrade boost from 1000 to 3000)
+                    if not already_boosted:
+                        # First time boosting
+                        entity["is_supplementary"] = True
+                        entity["is_direct_link"] = is_direct_link
+                        entity["rank"] = entity.get("rank", 0) + new_boost
+                        boosted_entities.append(entity)
+                    elif is_direct_link and not current_is_direct:
+                        # Upgrade: was 1000, now should be 3000
+                        entity["is_direct_link"] = True
+                        entity["rank"] = entity.get("rank", 0) + 2000  # Add extra 2000 to reach 3000 total
+                        boosted_entities.append(entity)
+                    else:
+                        remaining_entities.append(entity)
+                else:
+                    remaining_entities.append(entity)
+            
+            if boosted_entities:
+                logger.info(
+                    f"Hop {current_depth + 1}: Boosting {len(boosted_entities)} existing entities from supplementary relations: "
+                    f"{[e['entity_name'] for e in boosted_entities[:5]]}..."
+                )
+                # Insert boosted entities at high priority position
+                insert_pos = min(len(remaining_entities), query_param.top_k // 2)
+                all_entities = remaining_entities[:insert_pos] + boosted_entities + remaining_entities[insert_pos:]
+        
+        # Insert supplementary relations near the beginning for better truncation survival
+        if supplementary_relations:
+            logger.debug(
+                f"Hop {current_depth + 1}: Found {len(supplementary_relations)} supplementary/parent-child relations"
+            )
+            insert_pos = min(len(all_relations), query_param.top_k // 2)
+            for i, rel in enumerate(supplementary_relations):
+                all_relations.insert(insert_pos + i, rel)
+        
+        # Add regular relations at the end
+        all_relations.extend(regular_relations)
+
+        # Recursively expand if we haven't reached max depth
+        if current_depth + 1 < max_depth:
+            all_entities, all_relations = await _expand_entities_by_hop(
+                initial_entities=all_entities,
+                initial_relations=all_relations,
+                knowledge_graph_inst=knowledge_graph_inst,
+                query_param=query_param,
+                current_depth=current_depth + 1,
+                max_depth=max_depth,
+                query_entity_names=query_entity_names,  # Pass through to maintain query entity tracking
+            )
+
+    logger.debug(
+        f"Hop {current_depth + 1}: Added {len(all_new_entities)} entities, "
+        f"total now {len(all_entities)} entities, {len(all_relations)} relations"
+    )
+
+    return all_entities, all_relations
 
 
 async def _find_most_related_edges_from_entities(
@@ -4314,6 +5131,11 @@ async def _find_related_text_unit_from_entities(
                         "entity_data": entity,
                     }
                 )
+    
+    # Debug: Check Khoản 10 in entities_with_chunks
+    khoan10_check = [e for e in entities_with_chunks if "Khoản 10 - Điều 23" in e.get("entity_name", "")]
+    if khoan10_check:
+        logger.info(f"DEBUG: Khoản 10-23 in entities_with_chunks: {[(e['entity_name'], e['chunks'][:2], e['entity_data'].get('is_supplementary'), e['entity_data'].get('is_direct_link')) for e in khoan10_check]}")
 
     if not entities_with_chunks:
         logger.warning("No entities with text chunks found")
@@ -4327,16 +5149,19 @@ async def _find_related_text_unit_from_entities(
     )
 
     # Step 2: Count chunk occurrences and deduplicate (keep chunks from earlier positioned entities)
+    # But for supplementary entities, always keep their chunks
     chunk_occurrence_count = {}
     for entity_info in entities_with_chunks:
+        is_supplementary = entity_info.get("entity_data", {}).get("is_supplementary", False)
         deduplicated_chunks = []
         for chunk_id in entity_info["chunks"]:
             chunk_occurrence_count[chunk_id] = (
                 chunk_occurrence_count.get(chunk_id, 0) + 1
             )
 
-            # If this is the first occurrence (count == 1), keep it; otherwise skip (duplicate from later position)
-            if chunk_occurrence_count[chunk_id] == 1:
+            # If this is the first occurrence (count == 1), keep it
+            # Also keep for supplementary entities regardless of count
+            if chunk_occurrence_count[chunk_id] == 1 or is_supplementary:
                 deduplicated_chunks.append(chunk_id)
             # count > 1 means this chunk appeared in an earlier entity, so skip it
 
@@ -4354,6 +5179,11 @@ async def _find_related_text_unit_from_entities(
         entity_info["sorted_chunks"] = sorted_chunks
         total_entity_chunks += len(sorted_chunks)
 
+    # Debug: Check Khoản 10 after sorting
+    khoan10_after_sort = [e for e in entities_with_chunks if "Khoản 10 - Điều 23" in e.get("entity_name", "")]
+    if khoan10_after_sort:
+        logger.info(f"DEBUG: Khoản 10-23 after sort: chunks={khoan10_after_sort[0].get('chunks', [])}, sorted_chunks={khoan10_after_sort[0].get('sorted_chunks', [])}, is_supplementary={khoan10_after_sort[0].get('entity_data', {}).get('is_supplementary')}")
+
     selected_chunk_ids = []  # Initialize to avoid UnboundLocalError
 
     # Step 4: Apply the selected chunk selection algorithm
@@ -4370,6 +5200,46 @@ async def _find_related_text_unit_from_entities(
             kg_chunk_pick_method = "WEIGHT"
         else:
             try:
+                # Collect priority chunks ONLY from entities with is_direct_link=True
+                # These are entities directly linked to query entities (parent-child/supplementary)
+                # This ensures only truly relevant chunks get priority treatment
+                priority_chunk_ids = set()
+                direct_link_entities_found = []
+                for entity_info in entities_with_chunks:
+                    entity_data = entity_info.get("entity_data", {})
+                    entity_name = entity_info.get("entity_name", "")
+                    # Only use is_direct_link for priority, not all is_supplementary
+                    if entity_data.get("is_direct_link"):
+                        direct_link_entities_found.append(entity_name)
+                        for chunk_id in entity_info.get("sorted_chunks", []):
+                            priority_chunk_ids.add(chunk_id)
+                    
+                    # Debug: Log Khoản 10 entity
+                    if "khoản 10" in entity_name.lower() and "điều 23" in entity_name.lower():
+                        logger.info(f"DEBUG: Khoản 10-23 entity_data: is_direct_link={entity_data.get('is_direct_link')}, is_supplementary={entity_data.get('is_supplementary')}, chunks={entity_info.get('sorted_chunks', [])}")
+                    
+                    # Debug: Log Khoản 5a entity
+                    if "khoản 5a" in entity_name.lower():
+                        logger.info(f"DEBUG: Khoản 5a entity_data: name={entity_name}, is_direct_link={entity_data.get('is_direct_link')}, is_supplementary={entity_data.get('is_supplementary')}, chunks={entity_info.get('sorted_chunks', [])}")
+                
+                logger.info(f"DEBUG: entities_with_chunks has {len(entities_with_chunks)} entities")
+                logger.info(f"DEBUG: Found {len(direct_link_entities_found)} direct_link entities for priority: {direct_link_entities_found[:10]}")
+                logger.info(f"DEBUG: priority_chunk_ids has {len(priority_chunk_ids)} chunks: {list(priority_chunk_ids)[:5]}")
+                
+                # Check if Khoản 10 chunks are in priority
+                khoan10_priority = [c for c in priority_chunk_ids if "f5c8b3c5" in c]
+                if khoan10_priority:
+                    logger.info(f"DEBUG: Khoản 10-23 chunks IN priority_chunk_ids: {khoan10_priority}")
+                else:
+                    logger.info(f"DEBUG: Khoản 10-23 chunks NOT in priority_chunk_ids")
+                
+                # Check if Khoản 5a chunks are in priority
+                khoan5a_priority = [c for c in priority_chunk_ids if "ffacaa2e" in c]
+                if khoan5a_priority:
+                    logger.info(f"DEBUG: Khoản 5a chunks IN priority_chunk_ids: {khoan5a_priority}")
+                else:
+                    logger.info(f"DEBUG: Khoản 5a chunks NOT in priority_chunk_ids")
+                
                 selected_chunk_ids = await pick_by_vector_similarity(
                     query=query,
                     text_chunks_storage=text_chunks_db,
@@ -4379,6 +5249,15 @@ async def _find_related_text_unit_from_entities(
                     embedding_func=actual_embedding_func,
                     query_embedding=query_embedding,
                 )
+                
+                # Ensure priority chunks from direct_link entities are always included
+                if priority_chunk_ids:
+                    selected_set = set(selected_chunk_ids)
+                    missing_priority = priority_chunk_ids - selected_set
+                    if missing_priority:
+                        # Add missing priority chunks at the beginning
+                        selected_chunk_ids = list(missing_priority) + selected_chunk_ids
+                        logger.debug(f"Added {len(missing_priority)} priority chunks from supplementary entities")
 
                 if selected_chunk_ids == []:
                     kg_chunk_pick_method = "WEIGHT"
@@ -4410,6 +5289,16 @@ async def _find_related_text_unit_from_entities(
     if not selected_chunk_ids:
         return []
 
+    # Build chunk_id to entity_rank mapping for priority sorting in merge
+    chunk_to_entity_rank = {}
+    for entity_info in entities_with_chunks:
+        entity_data = entity_info.get("entity_data", {})
+        entity_rank = entity_data.get("rank", 0)
+        for chunk_id in entity_info.get("sorted_chunks", []):
+            # Keep highest rank if chunk belongs to multiple entities
+            if chunk_id not in chunk_to_entity_rank or entity_rank > chunk_to_entity_rank[chunk_id]:
+                chunk_to_entity_rank[chunk_id] = entity_rank
+
     # Step 5: Batch retrieve chunk data
     unique_chunk_ids = list(
         dict.fromkeys(selected_chunk_ids)
@@ -4417,12 +5306,17 @@ async def _find_related_text_unit_from_entities(
     chunk_data_list = await text_chunks_db.get_by_ids(unique_chunk_ids)
 
     # Step 6: Build result chunks with valid data and update chunk tracking
+    # Mark priority chunks so they can be prioritized in merge
     result_chunks = []
     for i, (chunk_id, chunk_data) in enumerate(zip(unique_chunk_ids, chunk_data_list)):
         if chunk_data is not None and "content" in chunk_data:
             chunk_data_copy = chunk_data.copy()
             chunk_data_copy["source_type"] = "entity"
             chunk_data_copy["chunk_id"] = chunk_id  # Add chunk_id for deduplication
+            # Mark as priority if this chunk is from a direct_link entity
+            chunk_data_copy["is_priority"] = chunk_id in priority_chunk_ids
+            # Add entity_rank for priority sorting
+            chunk_data_copy["entity_rank"] = chunk_to_entity_rank.get(chunk_id, 0)
             result_chunks.append(chunk_data_copy)
 
             # Update chunk tracking if provided

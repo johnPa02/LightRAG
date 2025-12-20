@@ -49,6 +49,7 @@ inputs/
 output/
 rag_storage/
 data/
+backup_20241219/
 
 # Evaluation results
 lightrag/evaluation/results/

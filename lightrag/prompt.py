@@ -68,10 +68,17 @@ For EACH relationship, output EXACTLY 5 fields on ONE line:
 2) source_entity          — must EXACTLY match some entity_name you have output above
 3) target_entity          — must EXACTLY match some entity_name you have output above
 4) relationship_keywords  — 1–3 short keywords, separated by comma (e.g. "GUIDED_BY, biểu mẫu")
-5) relationship_description — one short sentence explaining the relation
+5) relationship_description — MUST include:
+   - The relationship type
+   - **The title/subject of the source entity** (e.g., "Điều 20 quy định về hồ sơ đăng ký doanh nghiệp")
+   - This helps with semantic search for topics like "hồ sơ đăng ký"
 
 **Format (RELATION line):**
 relation{tuple_delimiter}source_entity{tuple_delimiter}target_entity{tuple_delimiter}relationship_keywords{tuple_delimiter}relationship_description
+
+**IMPORTANT for relationship_description:**
+- BAD: "Điều 20 thuộc Nghị định 01/2021" (no topic info, useless for search)
+- GOOD: "Điều 20 quy định về hồ sơ đăng ký doanh nghiệp, thuộc Nghị định 01/2021" (contains topic)
 
 STRICT RULES FOR RELATIONS:
 - Do NOT output more or fewer than 5 fields.
@@ -99,11 +106,11 @@ STRICT RULES FOR RELATIONS:
 Suppose the delimiter is <|#|>. Then a correct output could look like:
 
 entity<|#|>Nghị định 168/2025/NĐ-CP<|#|>LawDocument<|#|>Nghị định quy định về đăng ký doanh nghiệp.
-entity<|#|>Điều 124<|#|>Article<|#|>Điều khoản thi hành của Nghị định 168/2025/NĐ-CP.
-entity<|#|>Khoản 2 Điều 124<|#|>Clause<|#|>Quy định việc thay thế các nghị định trước đây.
+entity<|#|>Điều 124<|#|>Article<|#|>Điều 124 quy định điều khoản thi hành của Nghị định 168/2025/NĐ-CP.
+entity<|#|>Khoản 2 Điều 124<|#|>Clause<|#|>Khoản 2 quy định việc thay thế các nghị định trước đây.
 
-relation<|#|>Điều 124<|#|>Nghị định 168/2025/NĐ-CP<|#|>IS_PART_OF_DOCUMENT<|#|>Điều 124 là một phần của Nghị định 168/2025/NĐ-CP.
-relation<|#|>Khoản 2 Điều 124<|#|>Nghị định 01/2021/NĐ-CP<|#|>REPEALS<|#|>Khoản 2 Điều 124 quy định việc thay thế Nghị định 01/2021/NĐ-CP.
+relation<|#|>Điều 124<|#|>Nghị định 168/2025/NĐ-CP<|#|>IS_PART_OF_DOCUMENT<|#|>Điều 124 quy định điều khoản thi hành, thuộc Nghị định 168/2025/NĐ-CP.
+relation<|#|>Khoản 2 Điều 124<|#|>Nghị định 01/2021/NĐ-CP<|#|>REPEALS<|#|>Khoản 2 Điều 124 quy định việc thay thế Nghị định 01/2021/NĐ-CP về đăng ký doanh nghiệp.
 
 <|COMPLETE|>
 
@@ -177,7 +184,12 @@ Căn cứ Điều 56 Nghị định 168/2025/NĐ-CP quy định về đăng ký 
 ```
 
 <Output>
-entity{tuple_delimiter}Nghị định 168/2025/NĐ-CP{tuple_delimiter}LawDocument{tuple_delimiter}Nghị định 168/2025/NĐ-CP là văn bản quy định về đăng ký doanh nghiệp và các thủ tục liên quan. entity{tuple_delimiter}Điều 56 - Nghị định 168/2025/NĐ-CP{tuple_delimiter}Article{tuple_delimiter}Điều 56 của Nghị định 168/2025/NĐ-CP quy định về đăng ký thay đổi nội dung hoạt động của chi nhánh và văn phòng đại diện. entity{tuple_delimiter}Khoản 1 - Điều 56 - Nghị định 168/2025/NĐ-CP{tuple_delimiter}Clause{tuple_delimiter}Khoản 1 của Điều 56 quy định hồ sơ bao gồm Thông báo thay đổi nội dung đăng ký hoạt động của chi nhánh. relation{tuple_delimiter}Điều 56 - Nghị định 168/2025/NĐ-CP{tuple_delimiter}Nghị định 168/2025/NĐ-CP{tuple_delimiter}IS_PART_OF_DOCUMENT{tuple_delimiter}Điều 56 thuộc Nghị định 168/2025/NĐ-CP. relation{tuple_delimiter}Khoản 1 - Điều 56 - Nghị định 168/2025/NĐ-CP{tuple_delimiter}Điều 56 - Nghị định 168/2025/NĐ-CP{tuple_delimiter}IS_PART_OF_ARTICLE{tuple_delimiter}Khoản 1 thuộc Điều 56. relation{tuple_delimiter}Điều 56 - Nghị định 168/2025/NĐ-CP{tuple_delimiter}Nghị định 168/2025/NĐ-CP{tuple_delimiter}REFERENCES{tuple_delimiter}Văn bản có viện dẫn đến Điều 56 của Nghị định 168/2025/NĐ-CP. {completion_delimiter}
+entity{tuple_delimiter}Nghị định 168/2025/NĐ-CP{tuple_delimiter}LawDocument{tuple_delimiter}Nghị định 168/2025/NĐ-CP là văn bản quy định về đăng ký doanh nghiệp và các thủ tục liên quan.
+entity{tuple_delimiter}Điều 56 - Nghị định 168/2025/NĐ-CP{tuple_delimiter}Article{tuple_delimiter}Điều 56 quy định về đăng ký thay đổi nội dung hoạt động của chi nhánh và văn phòng đại diện.
+entity{tuple_delimiter}Khoản 1 - Điều 56 - Nghị định 168/2025/NĐ-CP{tuple_delimiter}Clause{tuple_delimiter}Khoản 1 quy định hồ sơ bao gồm Thông báo thay đổi nội dung đăng ký hoạt động của chi nhánh.
+relation{tuple_delimiter}Điều 56 - Nghị định 168/2025/NĐ-CP{tuple_delimiter}Nghị định 168/2025/NĐ-CP{tuple_delimiter}IS_PART_OF_DOCUMENT, đăng ký thay đổi, chi nhánh{tuple_delimiter}Điều 56 quy định về đăng ký thay đổi nội dung hoạt động chi nhánh và văn phòng đại diện, thuộc Nghị định 168/2025/NĐ-CP.
+relation{tuple_delimiter}Khoản 1 - Điều 56 - Nghị định 168/2025/NĐ-CP{tuple_delimiter}Điều 56 - Nghị định 168/2025/NĐ-CP{tuple_delimiter}IS_PART_OF_ARTICLE, hồ sơ đăng ký{tuple_delimiter}Khoản 1 quy định hồ sơ đăng ký thay đổi hoạt động chi nhánh, thuộc Điều 56.
+{completion_delimiter}
 
 """,
     """<Input Text>
@@ -186,32 +198,54 @@ Theo Điểm b Khoản 2 Điều 7 Luật Doanh nghiệp 2020, doanh nghiệp c�
 ```
 
 <Output>
-entity{tuple_delimiter}Luật Doanh nghiệp 2020{tuple_delimiter}LawDocument{tuple_delimiter}Luật Doanh nghiệp 2020 là văn bản quy định về thành lập, tổ chức và hoạt động của doanh nghiệp. entity{tuple_delimiter}Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Article{tuple_delimiter}Điều 7 của Luật Doanh nghiệp 2020 quy định về quyền và nghĩa vụ của doanh nghiệp. entity{tuple_delimiter}Khoản 2 - Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Clause{tuple_delimiter}Khoản 2 của Điều 7 quy định về các nghĩa vụ của doanh nghiệp. entity{tuple_delimiter}Điểm b - Khoản 2 - Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Point{tuple_delimiter}Điểm b của Khoản 2 Điều 7 quy định nghĩa vụ kê khai trung thực và chính xác. relation{tuple_delimiter}Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Luật Doanh nghiệp 2020{tuple_delimiter}IS_PART_OF_DOCUMENT{tuple_delimiter}Điều 7 thuộc Luật Doanh nghiệp 2020. relation{tuple_delimiter}Khoản 2 - Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}IS_PART_OF_ARTICLE{tuple_delimiter}Khoản 2 thuộc Điều 7. relation{tuple_delimiter}Điểm b - Khoản 2 - Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Khoản 2 - Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}IS_PART_OF_CLAUSE{tuple_delimiter}Điểm b thuộc Khoản 2 của Điều 7. relation{tuple_delimiter}Điểm b - Khoản 2 - Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Luật Doanh nghiệp 2020{tuple_delimiter}REFERENCES{tuple_delimiter}Có viện dẫn đến quy định tại Điểm b Khoản 2 Điều 7 Luật Doanh nghiệp 2020. {completion_delimiter}
+entity{tuple_delimiter}Luật Doanh nghiệp 2020{tuple_delimiter}LawDocument{tuple_delimiter}Luật Doanh nghiệp 2020 là văn bản quy định về thành lập, tổ chức và hoạt động của doanh nghiệp.
+entity{tuple_delimiter}Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Article{tuple_delimiter}Điều 7 quy định về quyền và nghĩa vụ của doanh nghiệp.
+entity{tuple_delimiter}Khoản 2 - Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Clause{tuple_delimiter}Khoản 2 quy định về các nghĩa vụ của doanh nghiệp.
+entity{tuple_delimiter}Điểm b - Khoản 2 - Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Point{tuple_delimiter}Điểm b quy định nghĩa vụ kê khai trung thực và chính xác thông tin đăng ký.
+relation{tuple_delimiter}Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Luật Doanh nghiệp 2020{tuple_delimiter}IS_PART_OF_DOCUMENT, quyền nghĩa vụ doanh nghiệp{tuple_delimiter}Điều 7 quy định về quyền và nghĩa vụ của doanh nghiệp, thuộc Luật Doanh nghiệp 2020.
+relation{tuple_delimiter}Khoản 2 - Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}IS_PART_OF_ARTICLE, nghĩa vụ doanh nghiệp{tuple_delimiter}Khoản 2 quy định các nghĩa vụ của doanh nghiệp, thuộc Điều 7.
+relation{tuple_delimiter}Điểm b - Khoản 2 - Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Khoản 2 - Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}IS_PART_OF_CLAUSE, kê khai thông tin{tuple_delimiter}Điểm b quy định nghĩa vụ kê khai trung thực thông tin đăng ký, thuộc Khoản 2.
+{completion_delimiter}
 
 """,
     """<Input Text>
 ```
-Chunk 14 đề cập đến quy định về hồ sơ đăng ký doanh nghiệp theo Nghị định 01/2021/NĐ-CP tại Điều 20.
-
+Điều 20 Nghị định 01/2021/NĐ-CP quy định về hồ sơ đăng ký công ty hợp danh. Khoản 1 nêu các giấy tờ cần có trong hồ sơ.
 ```
 <Output>
-entity{tuple_delimiter}Nghị định 01/2021/NĐ-CP{tuple_delimiter}LawDocument{tuple_delimiter}Nghị định 01/2021/NĐ-CP là văn bản quy định về đăng ký doanh nghiệp. entity{tuple_delimiter}Điều 20 - Nghị định 01/2021/NĐ-CP{tuple_delimiter}Article{tuple_delimiter}Điều 20 của Nghị định 01/2021/NĐ-CP quy định về hồ sơ đăng ký doanh nghiệp. entity{tuple_delimiter}Chunk 14 - ND01/2021{tuple_delimiter}Chunk{tuple_delimiter}Chunk 14 chứa nội dung mô tả quy định tại Điều 20 của Nghị định 01/2021/NĐ-CP. relation{tuple_delimiter}Điều 20 - Nghị định 01/2021/NĐ-CP{tuple_delimiter}Nghị định 01/2021/NĐ-CP{tuple_delimiter}IS_PART_OF_DOCUMENT{tuple_delimiter}Điều 20 thuộc Nghị định 01/2021/NĐ-CP. relation{tuple_delimiter}Chunk 14 - ND01/2021{tuple_delimiter}Điều 20 - Nghị định 01/2021/NĐ-CP{tuple_delimiter}DESCRIBES{tuple_delimiter}Chunk mô tả nội dung của Điều 20. relation{tuple_delimiter}Chunk 14 - ND01/2021{tuple_delimiter}Nghị định 01/2021/NĐ-CP{tuple_delimiter}IS_PART_OF_DOCUMENT{tuple_delimiter}Chunk 14 được trích từ Nghị định 01/2021/NĐ-CP. {completion_delimiter}
-
-""",
-    """<Input Text>
-```
-Điều 25 của Nghị định 122/2021/NĐ-CP dẫn chiếu đến Điều 21 của Nghị định này.
-```
-<Output>
-entity{tuple_delimiter}Nghị định 122/2021/NĐ-CP{tuple_delimiter}LawDocument{tuple_delimiter}Nghị định 122/2021/NĐ-CP quy định về xử phạt vi phạm hành chính trong lĩnh vực kế toán. entity{tuple_delimiter}Điều 25 - Nghị định 122/2021/NĐ-CP{tuple_delimiter}Article{tuple_delimiter}Điều 25 của Nghị định 122/2021/NĐ-CP có nội dung dẫn chiếu đến Điều 21. entity{tuple_delimiter}Điều 21 - Nghị định 122/2021/NĐ-CP{tuple_delimiter}Article{tuple_delimiter}Điều 21 của Nghị định 122/2021/NĐ-CP được viện dẫn bởi Điều 25. relation{tuple_delimiter}Điều 25 - Nghị định 122/2021/NĐ-CP{tuple_delimiter}Nghị định 122/2021/NĐ-CP{tuple_delimiter}IS_PART_OF_DOCUMENT{tuple_delimiter}Điều 25 thuộc Nghị định 122/2021/NĐ-CP. relation{tuple_delimiter}Điều 21 - Nghị định 122/2021/NĐ-CP{tuple_delimiter}Nghị định 122/2021/NĐ-CP{tuple_delimiter}IS_PART_OF_DOCUMENT{tuple_delimiter}Điều 21 thuộc Nghị định 122/2021/NĐ-CP. relation{tuple_delimiter}Điều 25 - Nghị định 122/2021/NĐ-CP{tuple_delimiter}Điều 21 - Nghị định 122/2021/NĐ-CP{tuple_delimiter}REFERENCES{tuple_delimiter}Điều 25 có dẫn chiếu đến Điều 21 của cùng Nghị định. {completion_delimiter}
+entity{tuple_delimiter}Nghị định 01/2021/NĐ-CP{tuple_delimiter}LawDocument{tuple_delimiter}Nghị định 01/2021/NĐ-CP là văn bản quy định về đăng ký doanh nghiệp.
+entity{tuple_delimiter}Điều 20 - Nghị định 01/2021/NĐ-CP{tuple_delimiter}Article{tuple_delimiter}Điều 20 quy định về hồ sơ đăng ký công ty hợp danh.
+entity{tuple_delimiter}Khoản 1 - Điều 20 - Nghị định 01/2021/NĐ-CP{tuple_delimiter}Clause{tuple_delimiter}Khoản 1 nêu các giấy tờ cần có trong hồ sơ đăng ký công ty hợp danh.
+relation{tuple_delimiter}Điều 20 - Nghị định 01/2021/NĐ-CP{tuple_delimiter}Nghị định 01/2021/NĐ-CP{tuple_delimiter}IS_PART_OF_DOCUMENT, hồ sơ đăng ký, công ty hợp danh{tuple_delimiter}Điều 20 quy định về hồ sơ đăng ký công ty hợp danh, thuộc Nghị định 01/2021/NĐ-CP.
+relation{tuple_delimiter}Khoản 1 - Điều 20 - Nghị định 01/2021/NĐ-CP{tuple_delimiter}Điều 20 - Nghị định 01/2021/NĐ-CP{tuple_delimiter}IS_PART_OF_ARTICLE, giấy tờ hồ sơ{tuple_delimiter}Khoản 1 nêu các giấy tờ trong hồ sơ đăng ký công ty hợp danh, thuộc Điều 20.
+{completion_delimiter}
 
 """,
     """<Input Text>
 ```
-Chunk 3 mô tả nội dung Điểm c Khoản 3 Điều 12 Luật Đầu tư 2020. Theo quy định tại Khoản 4 Điều 15 của Luật này, nhà đầu tư phải thực hiện đầy đủ nghĩa vụ tài chính.
+Điều 25 của Nghị định 122/2021/NĐ-CP quy định về xử phạt vi phạm trong hoạt động kế toán. Điều này dẫn chiếu đến Điều 21 của Nghị định cùng văn bản.
 ```
 <Output>
-entity{tuple_delimiter}Luật Đầu tư 2020{tuple_delimiter}LawDocument{tuple_delimiter}Luật Đầu tư 2020 quy định về hoạt động đầu tư kinh doanh tại Việt Nam. entity{tuple_delimiter}Điều 12 - Luật Đầu tư 2020{tuple_delimiter}Article{tuple_delimiter}Điều 12 của Luật Đầu tư 2020 quy định về các hành vi bị cấm trong hoạt động đầu tư. entity{tuple_delimiter}Khoản 3 - Điều 12 - Luật Đầu tư 2020{tuple_delimiter}Clause{tuple_delimiter}Khoản 3 Điều 12 quy định chi tiết các hành vi bị cấm. entity{tuple_delimiter}Điểm c - Khoản 3 - Điều 12 - Luật Đầu tư 2020{tuple_delimiter}Point{tuple_delimiter}Điểm c Khoản 3 Điều 12 mô tả một hành vi vi phạm trong hoạt động đầu tư. entity{tuple_delimiter}Điều 15 - Luật Đầu tư 2020{tuple_delimiter}Article{tuple_delimiter}Điều 15 quy định về nghĩa vụ tài chính của nhà đầu tư. entity{tuple_delimiter}Khoản 4 - Điều 15 - Luật Đầu tư 2020{tuple_delimiter}Clause{tuple_delimiter}Khoản 4 Điều 15 quy định nhà đầu tư phải thực hiện đầy đủ nghĩa vụ tài chính. entity{tuple_delimiter}Chunk 3 - LĐT2020{tuple_delimiter}Chunk{tuple_delimiter}Chunk 3 mô tả nội dung tại Điểm c Khoản 3 Điều 12 của Luật Đầu tư 2020. relation{tuple_delimiter}Điều 12 - Luật Đầu tư 2020{tuple_delimiter}Luật Đầu tư 2020{tuple_delimiter}IS_PART_OF_DOCUMENT{tuple_delimiter}Điều 12 thuộc Luật Đầu tư 2020. relation{tuple_delimiter}Khoản 3 - Điều 12 - Luật Đầu tư 2020{tuple_delimiter}Điều 12 - Luật Đầu tư 2020{tuple_delimiter}IS_PART_OF_ARTICLE{tuple_delimiter}Khoản 3 thuộc Điều 12. relation{tuple_delimiter}Điểm c - Khoản 3 - Điều 12 - Luật Đầu tư 2020{tuple_delimiter}Khoản 3 - Điều 12 - Luật Đầu tư 2020{tuple_delimiter}IS_PART_OF_CLAUSE{tuple_delimiter}Điểm c thuộc Khoản 3 của Điều 12. relation{tuple_delimiter}Điều 15 - Luật Đầu tư 2020{tuple_delimiter}Luật Đầu tư 2020{tuple_delimiter}IS_PART_OF_DOCUMENT{tuple_delimiter}Điều 15 thuộc Luật Đầu tư 2020. relation{tuple_delimiter}Khoản 4 - Điều 15 - Luật Đầu tư 2020{tuple_delimiter}Điều 15 - Luật Đầu tư 2020{tuple_delimiter}IS_PART_OF_ARTICLE{tuple_delimiter}Khoản 4 thuộc Điều 15. relation{tuple_delimiter}Chunk 3 - LĐT2020{tuple_delimiter}Điểm c - Khoản 3 - Điều 12 - Luật Đầu tư 2020{tuple_delimiter}DESCRIBES{tuple_delimiter}Chunk 3 mô tả nội dung tại Điểm c Khoản 3 Điều 12. relation{tuple_delimiter}Khoản 4 - Điều 15 - Luật Đầu tư 2020{tuple_delimiter}Luật Đầu tư 2020{tuple_delimiter}REFERENCES{tuple_delimiter}Khoản 4 Điều 15 có viện dẫn đến nghĩa vụ tài chính của nhà đầu tư theo Luật này. {completion_delimiter}
+entity{tuple_delimiter}Nghị định 122/2021/NĐ-CP{tuple_delimiter}LawDocument{tuple_delimiter}Nghị định 122/2021/NĐ-CP quy định về xử phạt vi phạm hành chính trong lĩnh vực kế toán.
+entity{tuple_delimiter}Điều 25 - Nghị định 122/2021/NĐ-CP{tuple_delimiter}Article{tuple_delimiter}Điều 25 quy định về xử phạt vi phạm trong hoạt động kế toán.
+entity{tuple_delimiter}Điều 21 - Nghị định 122/2021/NĐ-CP{tuple_delimiter}Article{tuple_delimiter}Điều 21 được viện dẫn bởi Điều 25.
+relation{tuple_delimiter}Điều 25 - Nghị định 122/2021/NĐ-CP{tuple_delimiter}Nghị định 122/2021/NĐ-CP{tuple_delimiter}IS_PART_OF_DOCUMENT, xử phạt kế toán{tuple_delimiter}Điều 25 quy định về xử phạt vi phạm hoạt động kế toán, thuộc Nghị định 122/2021/NĐ-CP.
+relation{tuple_delimiter}Điều 21 - Nghị định 122/2021/NĐ-CP{tuple_delimiter}Nghị định 122/2021/NĐ-CP{tuple_delimiter}IS_PART_OF_DOCUMENT{tuple_delimiter}Điều 21 thuộc Nghị định 122/2021/NĐ-CP.
+relation{tuple_delimiter}Điều 25 - Nghị định 122/2021/NĐ-CP{tuple_delimiter}Điều 21 - Nghị định 122/2021/NĐ-CP{tuple_delimiter}REFERENCES{tuple_delimiter}Điều 25 về xử phạt vi phạm kế toán có dẫn chiếu đến Điều 21.
+{completion_delimiter}
+
+""",
+    """<Input Text>
+```
+Điều 15 Luật Đầu tư 2020 quy định về nghĩa vụ tài chính của nhà đầu tư. Khoản 4 nêu rõ nhà đầu tư phải thực hiện đầy đủ nghĩa vụ nộp thuế.
+```
+<Output>
+entity{tuple_delimiter}Luật Đầu tư 2020{tuple_delimiter}LawDocument{tuple_delimiter}Luật Đầu tư 2020 quy định về hoạt động đầu tư kinh doanh tại Việt Nam.
+entity{tuple_delimiter}Điều 15 - Luật Đầu tư 2020{tuple_delimiter}Article{tuple_delimiter}Điều 15 quy định về nghĩa vụ tài chính của nhà đầu tư.
+entity{tuple_delimiter}Khoản 4 - Điều 15 - Luật Đầu tư 2020{tuple_delimiter}Clause{tuple_delimiter}Khoản 4 quy định nhà đầu tư phải thực hiện đầy đủ nghĩa vụ nộp thuế.
+relation{tuple_delimiter}Điều 15 - Luật Đầu tư 2020{tuple_delimiter}Luật Đầu tư 2020{tuple_delimiter}IS_PART_OF_DOCUMENT, nghĩa vụ tài chính, nhà đầu tư{tuple_delimiter}Điều 15 quy định về nghĩa vụ tài chính của nhà đầu tư, thuộc Luật Đầu tư 2020.
+relation{tuple_delimiter}Khoản 4 - Điều 15 - Luật Đầu tư 2020{tuple_delimiter}Điều 15 - Luật Đầu tư 2020{tuple_delimiter}IS_PART_OF_ARTICLE, nghĩa vụ nộp thuế{tuple_delimiter}Khoản 4 quy định nghĩa vụ nộp thuế của nhà đầu tư, thuộc Điều 15.
+{completion_delimiter}
 """,
 ]
 
@@ -716,6 +750,11 @@ Rules:
 - Output ONLY the JSON object.
 - All keywords must come strictly from the query.
 
+**CRITICAL RULE for Legal Citations:**
+- When query IS or CONTAINS a specific legal citation like "Điều X Nghị định/Luật Y", keep the FULL citation as ONE keyword.
+- DO NOT split "Điều 9 Nghị định 153/2020/NĐ-CP" into separate parts like "Điều 9" and "Nghị định 153/2020/NĐ-CP"
+- Splitting causes noise by matching unrelated entities.
+
 high_level_keywords:
 - **CRITICAL**: Include the FULL query phrase as-is if it describes a legal procedure/object:
   * "Hồ sơ đăng ký công ty hợp danh" → MUST include "hồ sơ đăng ký công ty hợp danh"
@@ -723,20 +762,21 @@ high_level_keywords:
 - Also include broader intent phrases:
   * "hồ sơ đăng ký", "thủ tục đăng ký", "yêu cầu giấy tờ"...
 - These are used to search for RELATIONSHIPS in a knowledge graph.
+- If query is JUST a legal citation (e.g., "Điều 9 Nghị định 153/2020/NĐ-CP"), leave high_level EMPTY.
 
 low_level_keywords:
-- **CRITICAL**: The FULL query phrase if it describes a specific legal object/procedure:
-  * Same as high_level - include "hồ sơ đăng ký công ty hợp danh" as a whole
-- Specific legal citations IF present (Luật, Nghị định, Điều, Khoản...).
+- **CRITICAL for legal citations**: Keep "Điều X Văn bản Y" as ONE keyword, never split.
+  * "Điều 9 Nghị định 153/2020/NĐ-CP" → ["Điều 9 Nghị định 153/2020/NĐ-CP"] (NOT ["Điều 9", "Nghị định 153/2020/NĐ-CP"])
+- The FULL query phrase if it describes a specific legal object/procedure.
 - Component terms that could be Entity names:
   * "công ty hợp danh", "chi nhánh", "doanh nghiệp tư nhân"
 - These are used to search for ENTITIES in a knowledge graph.
 
 Example thought process:
-Query: "Hồ sơ đăng ký công ty hợp danh"
-- This asks about REGISTRATION DOCUMENTS for a specific company type
-- high_level: ["hồ sơ đăng ký công ty hợp danh", "hồ sơ đăng ký", "thủ tục đăng ký"]
-- low_level: ["hồ sơ đăng ký công ty hợp danh", "công ty hợp danh"]
+Query: "Điều 9 Nghị định 153/2020/NĐ-CP"
+- This IS a specific legal citation, not asking about a procedure
+- high_level: [] (no broader intent)
+- low_level: ["Điều 9 Nghị định 153/2020/NĐ-CP"] (keep as ONE keyword)
 
 If the query contains no meaningful legal content, return empty arrays.
 
@@ -745,16 +785,27 @@ User Query: {query}
 
 PROMPTS["keywords_extraction_examples"] = [
     
-    """Example 1: (Query contains explicit citation)
+    """Example 1: (Query is a DIRECT legal citation - DO NOT SPLIT)
+Query: "Điều 9 Nghị định 153/2020/NĐ-CP"
+Output:
+{{
+  "high_level_keywords": [],
+  "low_level_keywords": ["Điều 9 Nghị định 153/2020/NĐ-CP"]
+}}
+Explanation: When query IS a specific legal citation (Điều X + Văn bản Y), keep it as ONE keyword. Do NOT split into "Điều 9" and "Nghị định 153/2020/NĐ-CP" separately as that causes noise.
+""",
+
+    """Example 2: (Query ABOUT a citation - extract full citation)
 Query: "Theo Điều 7 Nghị định 01/2021/NĐ-CP, hồ sơ gồm những gì?"
 Output:
 {{
   "high_level_keywords": ["thành phần hồ sơ", "quy định pháp lý"],
-  "low_level_keywords": ["Điều 7", "Nghị định 01/2021/NĐ-CP"]
+  "low_level_keywords": ["Điều 7 Nghị định 01/2021/NĐ-CP"]
 }}
+Explanation: Keep "Điều 7 Nghị định 01/2021/NĐ-CP" as ONE keyword. The high_level captures the intent (asking about document components).
 """,
 
-    """Example 2: (Query about a SPECIFIC PROCEDURE - combine terms)
+    """Example 3: (Query about a SPECIFIC PROCEDURE - combine terms)
 Query: "Hồ sơ đăng ký công ty hợp danh"
 Output:
 {{
@@ -771,7 +822,7 @@ Output:
 Explanation: The FULL phrase "hồ sơ đăng ký công ty hợp danh" MUST appear in BOTH high_level and low_level to maximize search coverage.
 """,
 
-    """Example 3: (Query about a Specific Legal Form/Document)
+    """Example 4: (Query about a Specific Legal Form/Document)
 Query: "Nội dung giấy đề nghị đăng ký doanh nghiệp"
 Output:
 {{
@@ -787,7 +838,7 @@ Output:
 }}
 """,
 
-    """Example 4: (Query about a Concept/Definition)
+    """Example 5: (Query about a Concept/Definition)
 Query: "Thế nào là doanh nghiệp nhà nước?"
 Output:
 {{
@@ -802,7 +853,7 @@ Output:
 }}
 """,
 
-    """Example 5: (Query about CONDITIONS/REQUIREMENTS)
+    """Example 6: (Query about CONDITIONS/REQUIREMENTS)
 Query: "Điều kiện làm chủ tịch hội đồng quản trị"
 Output:
 {{
@@ -818,7 +869,7 @@ Output:
 }}
 """,
 
-    """Example 6: (Query about ESTABLISHMENT PROCEDURE)
+    """Example 7: (Query about ESTABLISHMENT PROCEDURE)
 Query: "Thủ tục thành lập chi nhánh công ty"
 Output:
 {{
@@ -835,7 +886,7 @@ Output:
 }}
 """,
 
-    """Example 7: (Query about DOCUMENT REQUIREMENTS for specific company type)
+    """Example 8: (Query about DOCUMENT REQUIREMENTS for specific company type)
 Query: "Hồ sơ thành lập công ty TNHH một thành viên"
 Output:
 {{

@@ -673,6 +673,25 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             List of matching labels sorted by relevance
         """
 
+    async def search_entities_by_description(
+        self, keywords: list[str], limit: int = 20
+    ) -> list[dict]:
+        """Search entities whose description contains any of the given keywords.
+        
+        This is useful for finding entities related to concepts (e.g., "sở hữu chéo")
+        when the entity names are structured differently (e.g., "Điều 195").
+        
+        Args:
+            keywords: List of keywords to search for in entity descriptions
+            limit: Maximum number of results to return
+            
+        Returns:
+            List of entity dictionaries with entity_id and description
+        """
+        # Default implementation returns empty list
+        # Neo4j and other implementations can override this
+        return []
+
 
 class DocStatus(str, Enum):
     """Document processing status"""

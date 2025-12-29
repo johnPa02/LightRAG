@@ -104,4 +104,5 @@ ENV INPUT_DIR=/app/data/inputs
 # Expose API port
 EXPOSE 9621
 
-ENTRYPOINT ["python", "-m", "lightrag.api.lightrag_server"]
+# Use uvicorn directly (single worker - simpler, no IPC overhead)
+ENTRYPOINT ["lightrag-server"]

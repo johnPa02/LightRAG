@@ -1611,10 +1611,10 @@ async def _merge_nodes_then_upsert(
     # 1. Get existing node data from knowledge graph
     already_node = await knowledge_graph_inst.get_node(entity_name)
     if already_node:
-        already_entity_types.append(already_node["entity_type"])
-        already_source_ids.extend(already_node["source_id"].split(GRAPH_FIELD_SEP))
-        already_file_paths.extend(already_node["file_path"].split(GRAPH_FIELD_SEP))
-        already_description.extend(already_node["description"].split(GRAPH_FIELD_SEP))
+        already_entity_types.append(already_node.get("entity_type", ""))
+        already_source_ids.extend(already_node.get("source_id", "").split(GRAPH_FIELD_SEP))
+        already_file_paths.extend(already_node.get("file_path", "").split(GRAPH_FIELD_SEP))
+        already_description.extend(already_node.get("description", "").split(GRAPH_FIELD_SEP))
 
     new_source_ids = [dp["source_id"] for dp in nodes_data if dp.get("source_id")]
 
@@ -3022,6 +3022,7 @@ async def kg_query(
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
     chunks_vdb: BaseVectorStorage = None,
+    entity_chunks_db: BaseKVStorage = None,
 ) -> QueryResult | None:
     """
     Execute knowledge graph query and return unified QueryResult object.
@@ -3096,6 +3097,7 @@ async def kg_query(
         text_chunks_db,
         query_param,
         chunks_vdb,
+        entity_chunks_db,
     )
 
     if context_result is None:
@@ -3403,12 +3405,14 @@ async def _get_vector_context(
         valid_chunks = []
         for result in results:
             if "content" in result:
+                # Try multiple keys for chunk_id (Qdrant uses __id__, others might use id)
+                chunk_id = result.get("__id__") or result.get("id") or result.get("chunk_id")
                 chunk_with_metadata = {
                     "content": result["content"],
                     "created_at": result.get("created_at", None),
                     "file_path": result.get("file_path", "unknown_source"),
                     "source_type": "vector",  # Mark the source type
-                    "chunk_id": result.get("id"),  # Add chunk_id for deduplication
+                    "chunk_id": chunk_id,  # Add chunk_id for deduplication
                 }
                 valid_chunks.append(chunk_with_metadata)
 
@@ -3417,12 +3421,14 @@ async def _get_vector_context(
         )
         # DEBUG: Log top 5 vector chunks
         if valid_chunks:
-            top5_info = [(c.get("chunk_id", "")[:30], c.get("content", "")[:60]) for c in valid_chunks[:5]]
+            top5_info = [((c.get("chunk_id") or "")[:30], (c.get("content") or "")[:60]) for c in valid_chunks[:5]]
             logger.info(f"DEBUG: Top 5 vector chunks: {top5_info}")
         return valid_chunks
 
     except Exception as e:
+        import traceback
         logger.error(f"Error in _get_vector_context: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return []
 
 
@@ -3461,14 +3467,24 @@ async def _perform_kg_search(
     )
     query_embedding = None
     if query and (kg_chunk_pick_method == "VECTOR" or chunks_vdb):
-        actual_embedding_func = text_chunks_db.embedding_func
+        # Use chunks_vdb embedding_func for consistency with vector search
+        actual_embedding_func = chunks_vdb.embedding_func if chunks_vdb else text_chunks_db.embedding_func
+        logger.info(f"DEBUG: embedding_func from chunks_vdb={chunks_vdb is not None}, func={actual_embedding_func is not None}")
         if actual_embedding_func:
             try:
-                query_embedding = await actual_embedding_func([query])
-                query_embedding = query_embedding[
-                    0
-                ]  # Extract first embedding from batch result
-                logger.debug("Pre-computed query embedding for all vector operations")
+                embedding_result = await actual_embedding_func([query])
+                # Check if result is valid (handle numpy array case)
+                result_len = len(embedding_result) if embedding_result is not None else 0
+                logger.info(f"DEBUG: Raw embedding result type={type(embedding_result).__name__}, len={result_len}")
+                if result_len > 0:
+                    query_embedding = embedding_result[0]
+                    # Convert numpy array to list if needed
+                    if hasattr(query_embedding, 'tolist'):
+                        query_embedding = query_embedding.tolist()
+                    logger.info(f"DEBUG: Pre-computed embedding len={len(query_embedding)}")
+                else:
+                    logger.warning("DEBUG: Embedding result is None or empty")
+                    query_embedding = None
             except Exception as e:
                 logger.warning(f"Failed to pre-compute query embedding: {e}")
                 query_embedding = None
@@ -3508,15 +3524,19 @@ async def _perform_kg_search(
 
         # Get vector chunks for mix mode
         if query_param.mode == "mix" and chunks_vdb:
+            has_embedding = query_embedding is not None and (hasattr(query_embedding, '__len__') and len(query_embedding) > 0)
+            logger.info(f"DEBUG: Mix mode calling _get_vector_context, query_embedding is {'set' if has_embedding else 'None'}")
             vector_chunks = await _get_vector_context(
                 query,
                 chunks_vdb,
                 query_param,
                 query_embedding,
             )
+            logger.info(f"DEBUG: Mix mode got {len(vector_chunks)} vector chunks")
             # Track vector chunks with source metadata
             for i, chunk in enumerate(vector_chunks):
-                chunk_id = chunk.get("chunk_id") or chunk.get("id")
+                # Qdrant stores chunk ID in __id__ field within payload
+                chunk_id = chunk.get("__id__") or chunk.get("chunk_id") or chunk.get("id")
                 if chunk_id:
                     chunk_tracking[chunk_id] = {
                         "source": "C",
@@ -3599,9 +3619,12 @@ async def _apply_token_truncation(
     search_result: dict[str, Any],
     query_param: QueryParam,
     global_config: dict[str, str],
+    ll_keywords: str = "",  # Low-level keywords to boost matching entities
 ) -> dict[str, Any]:
     """
     Apply token-based truncation to entities and relations for LLM efficiency.
+    
+    Entities whose names closely match ll_keywords get priority boost to survive truncation.
     """
     tokenizer = global_config.get("tokenizer")
     if not tokenizer:
@@ -3630,12 +3653,44 @@ async def _apply_token_truncation(
     final_entities = search_result["final_entities"]
     final_relations = search_result["final_relations"]
 
+    # Boost rank for entities whose names match the query keywords
+    # This ensures entities directly relevant to the query survive truncation
+    
+    def normalize_for_match(s: str) -> str:
+        """Normalize string for matching by removing separators and extra spaces."""
+        import re
+        # Remove common separators: " - ", " – ", " — " and normalize spaces
+        s = re.sub(r'\s*[-–—]\s*', ' ', s.lower())
+        # Collapse multiple spaces
+        s = re.sub(r'\s+', ' ', s).strip()
+        return s
+    
+    if ll_keywords:
+        keywords_list = [kw.strip().lower() for kw in ll_keywords.split(",") if kw.strip()]
+        keywords_normalized = [normalize_for_match(kw) for kw in keywords_list]
+        boosted_count = 0
+        for entity in final_entities:
+            entity_name = entity.get("entity_name", "")
+            entity_name_normalized = normalize_for_match(entity_name)
+            # Check if entity name closely matches any keyword (after normalization)
+            for kw, kw_norm in zip(keywords_list, keywords_normalized):
+                # Match if normalized keyword is contained in normalized entity name or vice versa
+                if kw_norm in entity_name_normalized or entity_name_normalized in kw_norm:
+                    # Boost rank significantly (higher than supplementary boost of 1000)
+                    entity["_query_match_boost"] = True
+                    entity["rank"] = entity.get("rank", 0) + 5000  # Highest priority
+                    boosted_count += 1
+                    break
+        if boosted_count > 0:
+            logger.info(f"Boosted {boosted_count} entities matching query keywords: {keywords_list[:3]}")
+
     # Sort entities by rank (descending) to prioritize high-rank entities during truncation
-    # This ensures supplementary entities (rank boosted by +1000) survive truncation
+    # Priority order: query-matched > supplementary > regular (by rank)
     final_entities = sorted(
         final_entities,
         key=lambda x: (
-            x.get("is_supplementary", False),  # Supplementary entities first
+            x.get("_query_match_boost", False),  # Query-matched entities first
+            x.get("is_supplementary", False),  # Then supplementary entities
             x.get("rank", 0),  # Then by rank
         ),
         reverse=True,
@@ -3841,6 +3896,548 @@ def _parse_amendment_annotations(content: str) -> list[str]:
     return amendment_entities
 
 
+def _detect_cross_references(content: str) -> list[dict]:
+    """
+    Detect cross-references in chunk content.
+    Looks for patterns like:
+    - "quy định tại khoản X Điều Y"
+    - "theo điều X"
+    - "khoản X Điều Y của Luật này"
+    - "được hướng dẫn bởi Điều X Nghị định Y"
+    
+    Returns list of detected references with article/clause info.
+    """
+    import re
+    
+    references = []
+    
+    # Pattern 0: "được hướng dẫn bởi Điều X Nghị định/Thông tư Y" (guidance reference)
+    pattern0 = re.compile(
+        r'(?:được hướng dẫn bởi|hướng dẫn bởi|hướng dẫn tại|quy định chi tiết tại|quy định chi tiết bởi)\s+'
+        r'điều\s+(\d+[a-z]?)\s+'
+        r'(nghị định|thông tư)\s+'
+        r'(\d+[-/]\d+[-/][^\s\]]+)',
+        re.IGNORECASE | re.UNICODE
+    )
+    
+    # Find matches for pattern 0 (guidance references to decrees/circulars)
+    for match in pattern0.finditer(content):
+        dieu = match.group(1)
+        doc_type = match.group(2)  # "nghị định" or "thông tư"
+        doc_number = match.group(3)  # e.g., "47/2021/NĐ-CP"
+        if dieu:
+            references.append({
+                "type": "guidance",
+                "dieu": dieu,
+                "doc_type": doc_type.lower(),
+                "doc_number": doc_number,
+                "full_match": match.group(0),
+            })
+    
+    # Pattern 1: "quy định tại khoản X Điều Y" (most specific - clause + article)
+    pattern1 = re.compile(
+        r'(?:quy định tại|theo|tại|căn cứ|nêu tại|được quy định tại)\s+'
+        r'khoản\s+(\d+[a-z]?)\s+'
+        r'(?:điều\s+(\d+)|và khoản\s+\d+[a-z]?\s+điều\s+(\d+))',
+        re.IGNORECASE | re.UNICODE
+    )
+    
+    # Pattern 2: "quy định tại Điều X Luật/Nghị định Y" (article with optional law/decree name)
+    pattern2 = re.compile(
+        r'(?:quy định tại|theo|tại|căn cứ|nêu tại|được quy định tại)\s+'
+        r'điều\s+(\d+[a-z]?)'
+        r'(?:\s+(luật|nghị định|thông tư)\s+([^\s,;\.]+(?:\s+[^\s,;\.]+)?))?',
+        re.IGNORECASE | re.UNICODE
+    )
+    
+    # Pattern 2b: "Điều X của Luật/Nghị định này" (internal cross-reference within same document)
+    pattern2b = re.compile(
+        r'(?:quy định tại|theo|tại|căn cứ|nêu tại|được quy định tại)\s+'
+        r'(?:khoản\s+(\d+[a-z]?)\s+)?'  # Optional Khoản - GROUP 1
+        r'điều\s+(\d+[a-z]?)\s+'  # Điều - GROUP 2
+        r'(?:của\s+)?(luật|nghị định|thông tư)\s+này',  # "của Luật này" - GROUP 3
+        re.IGNORECASE | re.UNICODE
+    )
+    
+    # Pattern 3: "khoản X Điều Y của Luật này" (without quy định prefix)
+    pattern3 = re.compile(
+        r'khoản\s+(\d+[a-z]?)\s+điều\s+(\d+)\s+(?:của\s+)?(?:luật|nghị định|thông tư)',
+        re.IGNORECASE | re.UNICODE
+    )
+    
+    # Pattern 3b: "Điều X, Điều Y,... Luật/Nghị định Z" (multiple articles in sequence)
+    # Matches: "Điều 200, Điều 201 Luật Doanh nghiệp" or "Điều 5, Điều 6 và Điều 7 Nghị định 23/2022"
+    pattern3b = re.compile(
+        r'điều\s+(\d+)(?:\s*,\s*điều\s+(\d+))+(?:\s*(?:và|,)\s*điều\s+(\d+))?\s+'
+        r'(luật|nghị định|thông tư)\s+([^\s,;\.]+(?:\s+[^\s,;\.]+)?)',
+        re.IGNORECASE | re.UNICODE
+    )
+    
+    # Find all matches for pattern 1 (most specific)
+    for match in pattern1.finditer(content):
+        khoan = match.group(1)
+        dieu = match.group(2) or match.group(3)
+        if dieu:
+            references.append({
+                "type": "khoan_dieu",
+                "khoan": khoan,
+                "dieu": dieu,
+                "full_match": match.group(0),
+            })
+    
+    # Find all matches for pattern 2b FIRST (internal "của Luật/Nghị định này")
+    # This must run BEFORE pattern2 to capture internal refs with proper type
+    for match in pattern2b.finditer(content):
+        khoan = match.group(1)  # Optional
+        dieu = match.group(2)
+        doc_type = match.group(3)  # "luật", "nghị định", "thông tư"
+        if dieu:
+            # Check if this wasn't already captured
+            already_captured = any(
+                ref.get("dieu") == dieu and ref.get("khoan") == khoan
+                for ref in references
+            )
+            if not already_captured:
+                ref_data = {
+                    "type": "internal_ref",  # Mark as internal reference
+                    "dieu": dieu,
+                    "doc_type": doc_type.lower(),
+                    "full_match": match.group(0),
+                }
+                if khoan:
+                    ref_data["khoan"] = khoan
+                    ref_data["type"] = "khoan_dieu_internal"
+                references.append(ref_data)
+                logger.debug(f"DEBUG: Pattern2b internal ref: Điều {dieu}, Khoản {khoan}, doc_type={doc_type}")
+    
+    # Find all matches for pattern 2 (Điều with optional law/decree name)
+    for match in pattern2.finditer(content):
+        dieu = match.group(1)
+        doc_type = match.group(2)  # "luật", "nghị định", "thông tư" or None
+        doc_name = match.group(3)  # e.g., "Doanh nghiệp", "168/2024/NĐ-CP" or None
+        if dieu:
+            # Check if this Điều wasn't already captured with Khoản
+            already_captured = any(
+                ref["dieu"] == dieu for ref in references
+            )
+            if not already_captured:
+                ref_data = {
+                    "type": "dieu",
+                    "dieu": dieu,
+                    "full_match": match.group(0),
+                }
+                # Add law/decree info if captured
+                if doc_type:
+                    ref_data["doc_type"] = doc_type.lower()
+                    ref_data["doc_name"] = doc_name.strip() if doc_name else None
+                references.append(ref_data)
+    
+    # Find all matches for pattern 3
+    for match in pattern3.finditer(content):
+        khoan = match.group(1)
+        dieu = match.group(2)
+        if dieu:
+            # Check if this wasn't already captured
+            already_captured = any(
+                ref.get("dieu") == dieu and ref.get("khoan") == khoan
+                for ref in references
+            )
+            if not already_captured:
+                references.append({
+                    "type": "khoan_dieu",
+                    "khoan": khoan,
+                    "dieu": dieu,
+                    "full_match": match.group(0),
+                })
+    
+    # Find all matches for pattern 3b (multiple Điều in sequence)
+    for match in pattern3b.finditer(content):
+        full_text = match.group(0)
+        doc_type = match.group(4)
+        doc_name = match.group(5)
+        logger.debug(f"DEBUG: Pattern3b matched: '{full_text}'")
+        
+        # Extract all Điều numbers from the matched text
+        dieu_numbers = re.findall(r'điều\s+(\d+)', full_text, re.IGNORECASE)
+        logger.debug(f"DEBUG: Pattern3b extracted Điều numbers: {dieu_numbers}")
+        for dieu in dieu_numbers:
+            already_captured = any(ref.get("dieu") == dieu for ref in references)
+            if not already_captured:
+                ref_data = {
+                    "type": "dieu",
+                    "dieu": dieu,
+                    "full_match": full_text,
+                }
+                if doc_type:
+                    ref_data["doc_type"] = doc_type.lower()
+                    ref_data["doc_name"] = doc_name.strip() if doc_name else None
+                references.append(ref_data)
+                logger.debug(f"DEBUG: Pattern3b added ref: Điều {dieu} {doc_type} {doc_name}")
+    
+    # Pattern 4: "[...được sửa đổi bởi Khoản X Điều Y Luật Z...]" or "[...được sửa đổi bởi Điểm X Khoản Y Điều Z...]"
+    # This detects amendment annotations in brackets
+    pattern4 = re.compile(
+        r'\[(?:[^\]]*?)'  # Start of bracket, any content
+        r'(?:được sửa đổi|sửa đổi|bổ sung|thay thế|bãi bỏ)\s+bởi\s+'
+        r'(?:điểm\s+([a-z])\s+)?'  # Optional "Điểm a/b/c" - GROUP 1
+        r'(?:khoản\s+(\d+[a-z]?)\s+)?'  # Optional "Khoản X" - GROUP 2
+        r'điều\s+(\d+[a-z]?)\s+'  # Required "Điều Y" - GROUP 3
+        r'(luật|nghị định|thông tư)\s+'  # Required doc type - GROUP 4
+        r'([^\]]+?)'  # Doc name until end of bracket - GROUP 5
+        r'(?:\s+có hiệu lực[^\]]*)?'  # Optional "có hiệu lực..."
+        r'\]',
+        re.IGNORECASE | re.UNICODE
+    )
+    
+    for match in pattern4.finditer(content):
+        diem = match.group(1)  # Optional "Điểm a/b/c"
+        khoan = match.group(2)  # Optional "Khoản X"
+        dieu = match.group(3)  # Required "Điều Y"
+        doc_type = match.group(4).lower()  # "luật", "nghị định", "thông tư"
+        doc_name = match.group(5).strip()  # e.g., "08/2023/NĐ-CP"
+        
+        if dieu:
+            # Check if this wasn't already captured (must match dieu, doc_type AND doc_name)
+            already_captured = any(
+                ref.get("dieu") == dieu and ref.get("doc_type") == doc_type and ref.get("doc_name") == doc_name
+                for ref in references
+            )
+            if not already_captured:
+                ref_data = {
+                    "type": "amendment_ref",
+                    "dieu": dieu,
+                    "doc_type": doc_type,
+                    "doc_name": doc_name,
+                    "full_match": match.group(0),
+                }
+                if diem:
+                    ref_data["diem"] = diem
+                if khoan:
+                    ref_data["khoan"] = khoan
+                references.append(ref_data)
+                logger.info(f"DEBUG: Detected amendment ref: Điểm {diem} Khoản {khoan} Điều {dieu} {doc_type} {doc_name[:30]}")
+    
+    return references
+
+
+async def _resolve_cross_reference_chunks(
+    cross_refs: list[dict],
+    text_chunks_db: BaseKVStorage,
+    seen_chunk_ids: set,
+    source_file_path: str = None,  # For internal refs, restrict to same file
+) -> list[dict]:
+    """
+    Resolve cross-references to actual chunks.
+    For each reference, find chunks that contain the referenced article/clause content.
+    
+    Args:
+        cross_refs: List of cross-reference dicts detected
+        text_chunks_db: Storage for text chunks
+        seen_chunk_ids: Set of already included chunk IDs
+        source_file_path: For internal refs, only look in chunks from this file
+    
+    Returns list of chunks to inject.
+    """
+    if not cross_refs or not text_chunks_db:
+        logger.debug(f"Cross-ref resolution skipped: cross_refs={len(cross_refs) if cross_refs else 0}, text_chunks_db={text_chunks_db is not None}")
+        return []
+    
+    resolved_chunks = []
+    
+    # Get all chunk keys (this may be cached)
+    try:
+        all_keys = list(text_chunks_db._data.keys()) if hasattr(text_chunks_db, '_data') else []
+        logger.info(f"DEBUG: Cross-ref resolution has {len(all_keys)} chunk keys to search")
+        if not all_keys:
+            # Try to get via index_done_callback or similar
+            logger.warning("Cross-ref resolution: No chunk keys found in text_chunks_db._data")
+            return []
+    except Exception as e:
+        logger.warning(f"Could not get text chunk keys for cross-reference resolution: {e}")
+        return []
+    
+    for ref in cross_refs:
+        dieu = ref.get("dieu")
+        khoan = ref.get("khoan")
+        ref_type = ref.get("type", "")
+        
+        # For guidance references, we need to search for specific decree/circular
+        doc_type = ref.get("doc_type", "")  # "nghị định", "thông tư", "luật"
+        doc_number = ref.get("doc_number", "")  # e.g., "47/2021/NĐ-CP" (for guidance type)
+        doc_name = ref.get("doc_name", "")  # e.g., "Doanh nghiệp" (for dieu type)
+        
+        if ref_type == "guidance":
+            logger.info(f"DEBUG: Resolving guidance ref: Điều {dieu} {doc_type} {doc_number}")
+        elif ref_type == "amendment_ref":
+            logger.info(f"DEBUG: Resolving amendment_ref: Khoản {khoan} Điều {dieu} {doc_type} {doc_name}")
+        elif doc_type and doc_name:
+            logger.info(f"DEBUG: Resolving cross-ref: Điều {dieu} {doc_type} {doc_name}")
+        else:
+            logger.info(f"DEBUG: Resolving cross-ref: Điều {dieu}, Khoản {khoan}")
+        
+        if not dieu:
+            continue
+        
+        # Build search patterns based on reference type
+        search_patterns = []
+        
+        if ref_type == "guidance":
+            # For guidance references, look for the specific decree/circular article
+            # Format: "Nghị định 47/2021/NĐ-CP. Điều 9. ..."
+            doc_type_normalized = "Nghị định" if "nghị định" in doc_type else "Thông tư"
+            # Normalize doc_number: 47/2021/NĐ-CP or 47-2021-NĐ-CP
+            doc_number_variants = [
+                doc_number,
+                doc_number.replace("/", "-"),
+                doc_number.replace("-", "/"),
+            ]
+            for variant in doc_number_variants:
+                search_patterns.append(f"{doc_type_normalized} {variant}")
+                # Also try with Điều
+                search_patterns.append(f"Điều {dieu}")
+        elif ref_type == "khoan_dieu":
+            # Looking for specific Khoản within Điều
+            search_patterns.append(f"Điều {dieu}.")
+        else:
+            # Looking for entire Điều
+            search_patterns.append(f"Điều {dieu}.")
+        
+        # Search through chunks
+        found_chunk = False
+        for chunk_key in all_keys:
+            # For amendment_ref, we need to find the chunk even if it's in seen_chunk_ids
+            # because we need to inject it with is_amendment_content=True for priority
+            skip_if_seen = True
+            if ref_type == "amendment_ref":
+                skip_if_seen = False  # Don't skip for amendments - we need to inject with priority
+            
+            if skip_if_seen and chunk_key in seen_chunk_ids:
+                continue
+            
+            try:
+                chunk_data = await text_chunks_db.get_by_id(chunk_key)
+                if not chunk_data:
+                    continue
+                
+                content = chunk_data.get("content", "")
+                
+                # Check if this is the MAIN chunk for the referenced Điều
+                # (not just a chunk that references it)
+                is_main_chunk = False
+                
+                if ref_type == "guidance":
+                    # For guidance references, check if chunk is from the specific decree/circular
+                    # AND contains the referenced Điều
+                    doc_patterns_match = False
+                    dieu_pattern_match = False
+                    
+                    for variant in doc_number_variants if 'doc_number_variants' in dir() else [doc_number]:
+                        if variant.lower() in content.lower():
+                            doc_patterns_match = True
+                            break
+                    
+                    # Check if it contains the specific Điều as main content
+                    dieu_pattern = f"Điều {dieu}."
+                    if dieu_pattern in content:
+                        pattern_idx = content.find(dieu_pattern)
+                        # Điều should appear early in chunk for decree content
+                        if pattern_idx < 200:
+                            dieu_pattern_match = True
+                    
+                    if doc_patterns_match and dieu_pattern_match:
+                        is_main_chunk = True
+                elif ref_type == "dieu" and doc_type and doc_name:
+                    # For cross-references with law/decree name (e.g., "Điều 19 Luật Doanh nghiệp")
+                    # Check if chunk is from the specific law/decree
+                    doc_type_normalized = ""
+                    if "luật" in doc_type:
+                        doc_type_normalized = "Luật"
+                    elif "nghị định" in doc_type:
+                        doc_type_normalized = "Nghị định"
+                    elif "thông tư" in doc_type:
+                        doc_type_normalized = "Thông tư"
+                    
+                    # Check if chunk contains the law/decree name
+                    doc_name_match = False
+                    content_lower = content.lower()
+                    doc_name_lower = doc_name.lower().strip()
+                    
+                    # Try various matching patterns for the document name
+                    # e.g., "Luật Doanh nghiệp", "Luật doanh nghiệp 2020"
+                    if doc_type_normalized.lower() in content_lower:
+                        if doc_name_lower in content_lower:
+                            doc_name_match = True
+                        # Also try partial match for common patterns
+                        # "Doanh nghiệp" -> check for "luật doanh nghiệp"
+                        elif f"{doc_type_normalized.lower()} {doc_name_lower}" in content_lower:
+                            doc_name_match = True
+                    
+                    # Check for the specific Điều as main content
+                    dieu_pattern = f"Điều {dieu}."
+                    if doc_name_match and dieu_pattern in content:
+                        pattern_idx = content.find(dieu_pattern)
+                        if pattern_idx < 200:
+                            is_main_chunk = True
+                            logger.info(f"DEBUG: Found main chunk for Điều {dieu} {doc_type} {doc_name}")
+                elif ref_type in ("internal_ref", "khoan_dieu_internal") and doc_type:
+                    # For internal cross-references like "quy định tại Điều 59 của Luật này"
+                    # Use source_file_path to restrict to same document
+                    chunk_file_path = chunk_data.get("file_path", "")
+                    content_lower = content.lower()
+                    
+                    # If source_file_path is provided, only match chunks from same file
+                    file_match = True
+                    if source_file_path:
+                        # Normalize file paths for comparison
+                        source_name = source_file_path.lower().replace("_", " ").replace("-", " ")
+                        chunk_name = chunk_file_path.lower().replace("_", " ").replace("-", " ")
+                        # Check if they're from the same document
+                        file_match = (source_name == chunk_name) or (
+                            # Also allow match by document type in path
+                            ("luật" in doc_type and "luật" in chunk_name) or
+                            ("nghị định" in doc_type and "nghị định" in chunk_name) or
+                            ("thông tư" in doc_type and "thông tư" in chunk_name)
+                        )
+                        # For internal refs, prefer exact file match
+                        if source_file_path == chunk_file_path:
+                            file_match = True
+                    else:
+                        # Fallback: Check if chunk is from a document of the same type
+                        if "luật" in doc_type and "luật" in content_lower[:100]:
+                            file_match = True
+                        elif "nghị định" in doc_type and "nghị định" in content_lower[:100]:
+                            file_match = True
+                        elif "thông tư" in doc_type and "thông tư" in content_lower[:100]:
+                            file_match = True
+                    
+                    # Check for the specific Điều as main content
+                    dieu_pattern = f"Điều {dieu}."
+                    if file_match and dieu_pattern in content:
+                        pattern_idx = content.find(dieu_pattern)
+                        if pattern_idx < 200:
+                            is_main_chunk = True
+                            logger.info(f"DEBUG: Found internal ref chunk for Điều {dieu} {doc_type} (file: {chunk_file_path[:40]})")
+                            logger.info(f"DEBUG: Found internal ref chunk for Điều {dieu} {doc_type}")
+                elif ref_type == "amendment_ref" and doc_type and doc_name:
+                    # For amendment references like "[được sửa đổi bởi Khoản 6 Điều 1 Luật DN sửa đổi 2025]"
+                    # Need to find the chunk containing the actual amendment content
+                    content_lower = content.lower()
+                    doc_name_lower = doc_name.lower().strip()
+                    
+                    # Check if chunk is from the specific amending law/decree
+                    # e.g., "Luật Doanh nghiệp sửa đổi 2025. Điều 1. ... Khoản 6. ..."
+                    doc_type_normalized = ""
+                    if "luật" in doc_type:
+                        doc_type_normalized = "Luật"
+                    elif "nghị định" in doc_type:
+                        doc_type_normalized = "Nghị định"
+                    elif "thông tư" in doc_type:
+                        doc_type_normalized = "Thông tư"
+                    
+                    # Look for amendment law name in content
+                    doc_name_match = False
+                    if doc_name_lower in content_lower:
+                        doc_name_match = True
+                    # Also match partial: "sửa đổi 2025" -> "Luật Doanh nghiệp sửa đổi 2025"
+                    elif "sửa đổi" in doc_name_lower:
+                        # Try matching "Luật ... sửa đổi YYYY"
+                        year_match = re.search(r'(\d{4})', doc_name)
+                        if year_match:
+                            year = year_match.group(1)
+                            if f"sửa đổi {year}" in content_lower:
+                                doc_name_match = True
+                    
+                    if not doc_name_match:
+                        continue
+                    
+                    # Check for the specific Điều (usually Điều 1 for amendments)
+                    dieu_pattern = f"Điều {dieu}."
+                    dieu_found = dieu_pattern in content
+                    
+                    # Check for the specific Khoản if provided
+                    khoan_found = True  # Default true if no khoan specified
+                    if khoan:
+                        # Amendment laws often have format "1. Sửa đổi..." instead of "Khoản 1."
+                        khoan_patterns = [
+                            f"Khoản {khoan}.",
+                            f"Khoản {khoan} ",
+                            f"khoản {khoan}.",
+                            f"khoản {khoan} ",
+                            f"\n{khoan}.",   # "1." at start of line
+                            f"\n{khoan}. Sửa đổi",  # "1. Sửa đổi" format
+                            f"\n{khoan}. Bổ sung",  # "1. Bổ sung" format
+                            f" {khoan}. Sửa đổi",   # After space
+                        ]
+                        khoan_found = any(p in content for p in khoan_patterns)
+                        # Also check regex for "X. Sửa đổi" where X is the khoan number
+                        if not khoan_found:
+                            khoan_regex = re.search(rf'(?:^|\n)\s*{khoan}\.\s*(?:Sửa đổi|Bổ sung)', content)
+                            if khoan_regex:
+                                khoan_found = True
+                    
+                    # Debug log for Khoản 1 Điều 7 specifically
+                    if khoan == "1" and dieu == "7" and "sửa đổi luật đầu tư công" in doc_name_lower:
+                        if dieu_found and khoan_found:
+                            logger.info(f"DEBUG: Khoản 1 Điều 7 match - doc_name_match={doc_name_match}, doc_name={doc_name[:50]}")
+                    
+                    if doc_name_match and dieu_found and khoan_found:
+                        is_main_chunk = True
+                        logger.info(f"DEBUG: Found amendment content chunk for Khoản {khoan} Điều {dieu} {doc_type} {doc_name[:30]}")
+                else:
+                    # Original logic for other reference types
+                    for pattern in search_patterns:
+                        # Look for pattern indicating this is the main article content
+                        # "Điều X." should appear near the beginning or after law name
+                        if pattern in content:
+                            # Verify this is main content, not just a reference
+                            # Main content format: "Luật ... Điều X. Title\n1. ..."
+                            pattern_idx = content.find(pattern)
+                            # If pattern appears early in chunk, likely main content
+                            if pattern_idx < 200:
+                                is_main_chunk = True
+                                break
+                            # Also check if pattern is followed by article title (no "quy định" before it)
+                            if pattern_idx > 0:
+                                before_text = content[max(0, pattern_idx-50):pattern_idx]
+                                # If no "quy định tại" before, it's likely main content
+                                if "quy định tại" not in before_text.lower():
+                                    is_main_chunk = True
+                                    break
+                
+                if is_main_chunk:
+                    # For khoan_dieu type, verify the chunk contains the specific Khoản
+                    if ref_type == "khoan_dieu" and khoan:
+                        khoan_pattern = f"{khoan}."
+                        if khoan_pattern not in content and f"Khoản {khoan}" not in content:
+                            continue
+                    
+                    chunk_entry = {
+                        "content": content,
+                        "file_path": chunk_data.get("file_path", "unknown"),
+                        "chunk_id": chunk_key,
+                        "is_priority": True,
+                        "is_cross_reference": True,
+                        "source": "cross_reference_resolution",
+                        "referenced_from": ref.get("full_match", ""),
+                    }
+                    
+                    # Mark amendment_ref chunks with special flag for higher priority
+                    if ref_type == "amendment_ref":
+                        chunk_entry["is_amendment_content"] = True
+                        chunk_entry["source"] = "amendment_ref_resolution"
+                    
+                    resolved_chunks.append(chunk_entry)
+                    seen_chunk_ids.add(chunk_key)
+                    logger.info(f"DEBUG: Resolved cross-reference '{ref.get('full_match', '')}' to chunk {chunk_key[:30]}")
+                    break  # Found main chunk for this reference
+                    
+            except Exception as e:
+                logger.debug(f"Error checking chunk {chunk_key} for cross-reference: {e}")
+                continue
+    
+    return resolved_chunks
+
+
 async def _build_amendment_chunk_map(
     all_chunks: list[dict],
     filtered_entities: list[dict],
@@ -3889,7 +4486,8 @@ async def _build_amendment_chunk_map(
     
     # For each chunk, parse annotations and find amendment chunks
     for chunk in all_chunks:
-        chunk_id = chunk.get("chunk_id") or chunk.get("id")
+        # Qdrant stores chunk ID in __id__ field within payload
+        chunk_id = chunk.get("__id__") or chunk.get("chunk_id") or chunk.get("id")
         content = chunk.get("content", "")
         
         # Debug: Check if this is Điều 23 chunk
@@ -3914,20 +4512,50 @@ async def _build_amendment_chunk_map(
             
             logger.info(f"DEBUG: Looking for amendment khoan={khoan_num}, dieu={dieu_num}")
             
-            # Try to find matching entity with EXACT Khoản number
+            # Try to find matching entity with EXACT Khoản AND Điều number
             matched_chunks = []
             
             for ent_name, chunk_ids in entity_to_chunks.items():
-                # Entity must have same Khoản number if specified
-                if khoan_num:
+                # Entity must have same Khoản AND Điều number if specified
+                if khoan_num and dieu_num:
                     ent_khoan_match = re.search(r'Khoản\s+(\d+[a-z]?)', ent_name, re.IGNORECASE)
-                    if ent_khoan_match:
+                    ent_dieu_match = re.search(r'Điều\s+(\d+)', ent_name, re.IGNORECASE)
+                    if ent_khoan_match and ent_dieu_match:
                         ent_khoan_num = ent_khoan_match.group(1)
-                        if ent_khoan_num.lower() == khoan_num.lower():
+                        ent_dieu_num = ent_dieu_match.group(1)
+                        if ent_khoan_num.lower() == khoan_num.lower() and ent_dieu_num == dieu_num:
                             matched_chunks.extend(chunk_ids)
-                            logger.info(f"DEBUG: EXACT Khoản match entity '{ent_name}' with chunks {chunk_ids[:3]}")
+                            logger.info(f"DEBUG: EXACT Khoản+Điều match entity '{ent_name}' with chunks {chunk_ids[:3]}")
             
-            # If no exact Khoản match found, try content-based search
+            # If no match in entity_to_chunks, try direct lookup from entity_chunks_db
+            if not matched_chunks and entity_chunks_db and khoan_num:
+                # Build possible entity names based on parsed annotation
+                possible_names = [
+                    entity_name,  # Original parsed name: "Khoản 10 - Điều 1 - Luật Doanh nghiệp sửa đổi 2025"
+                ]
+                
+                # Extract law name and build alternative formats
+                law_match = re.search(r'(Luật\s+[\w\s]+(?:sửa đổi\s+)?\d{4})', entity_name, re.IGNORECASE)
+                if law_match and dieu_num:
+                    law_name = law_match.group(1)
+                    possible_names.extend([
+                        f"Khoản {khoan_num} - Điều {dieu_num} - {law_name}",
+                        f"Khoản {khoan_num} Điều {dieu_num} {law_name}",
+                        f"Khoản {khoan_num} - Điều {dieu_num} {law_name}",
+                        f"Khoản {khoan_num} Điều {dieu_num} - {law_name}",
+                    ])
+                
+                for possible_name in possible_names:
+                    try:
+                        entity_chunk_data = await entity_chunks_db.get_by_id(possible_name)
+                        if entity_chunk_data and "chunk_ids" in entity_chunk_data:
+                            matched_chunks.extend(entity_chunk_data["chunk_ids"])
+                            logger.info(f"DEBUG: Direct lookup found entity '{possible_name}' with chunks {entity_chunk_data['chunk_ids'][:3]}")
+                            break  # Found, no need to try other names
+                    except Exception:
+                        pass
+            
+            # If still no match, try content-based search
             if not matched_chunks and khoan_num and dieu_num and all_source_chunks:
                 logger.info(f"DEBUG: No entity match, searching by content for Khoản {khoan_num} Điều {dieu_num}")
                 # Search through all source chunks for amendment content
@@ -4069,11 +4697,23 @@ async def _merge_all_chunks(
     priority_count = 0
     vector_priority_count = 0
     amendment_injection_count = 0
+    cross_ref_injection_count = 0
     
-    # Add top 10 vector chunks FIRST (they have highest similarity to query)
+    # Build a quick lookup for main chunk content from all source chunks
+    main_chunk_content_map = {}
+    for chunk in all_source_chunks:
+        # Qdrant stores chunk ID in __id__ field within payload
+        chunk_id = chunk.get("__id__") or chunk.get("chunk_id") or chunk.get("id")
+        if chunk_id:
+            main_chunk_content_map[chunk_id] = chunk
+    
+    # CRITICAL: Add top vector chunks FIRST (they are highest relevance to query)
+    # This ensures Điều 93 etc. survive truncation even if many amendments exist
     TOP_VECTOR_PRIORITY = 10
+    logger.info(f"DEBUG: _merge_all_chunks received {len(vector_chunks)} vector_chunks, processing top {TOP_VECTOR_PRIORITY}")
     for chunk in vector_chunks[:TOP_VECTOR_PRIORITY]:
-        chunk_id = chunk.get("chunk_id") or chunk.get("id")
+        # Qdrant stores chunk ID in __id__ field within payload
+        chunk_id = chunk.get("__id__") or chunk.get("chunk_id") or chunk.get("id")
         if chunk_id and chunk_id not in seen_chunk_ids:
             seen_chunk_ids.add(chunk_id)
             merged_chunks.append(
@@ -4083,15 +4723,225 @@ async def _merge_all_chunks(
                     "chunk_id": chunk_id,
                     "is_priority": True,
                     "source": "vector_top",
+                    "vector_rank": vector_priority_count,  # Track original rank
                 }
             )
             vector_priority_count += 1
+            logger.info(f"DEBUG: Added vector_top chunk {chunk_id[:30]} at position {len(merged_chunks)-1}")
             
             # Inject amendment chunks right after this main chunk
             amendment_injection_count += inject_amendment_chunks(chunk_id, merged_chunks, seen_chunk_ids)
+            
+            # Also check for cross-references in this vector chunk
+            cross_refs = _detect_cross_references(chunk["content"])
+            logger.info(f"DEBUG: Vector chunk {chunk_id[:20]} has {len(cross_refs)} cross-refs detected")
+            if cross_refs:
+                logger.info(f"DEBUG: Cross-refs found: {[r.get('full_match', '')[:40] for r in cross_refs[:5]]}")
+                # Pass source file_path for internal refs
+                source_file_path = chunk.get("file_path")
+                resolved_chunks = await _resolve_cross_reference_chunks(
+                    cross_refs, text_chunks_db, seen_chunk_ids, source_file_path
+                )
+                logger.info(f"DEBUG: Resolved {len(resolved_chunks)} chunks for cross-refs")
+                # Insert cross-ref chunks RIGHT AFTER current position to ensure they survive truncation
+                insert_position = len(merged_chunks)  # Current position after adding this chunk
+                for i, resolved_chunk in enumerate(resolved_chunks):
+                    merged_chunks.insert(insert_position + i, resolved_chunk)
+                    cross_ref_injection_count += 1
+                    logger.info(f"DEBUG: Inserted cross-ref chunk {resolved_chunk.get('chunk_id', '')[:20]} at position {insert_position + i}")
     
     if vector_priority_count > 0:
-        logger.info(f"Added {vector_priority_count} top vector chunks as HIGH priority (with {amendment_injection_count} amendment injections)")
+        logger.info(f"Added {vector_priority_count} top vector chunks as HIGH priority (with {amendment_injection_count} amendments, {cross_ref_injection_count} cross-refs)")
+    
+    # NEW: Find and inject chunks where article title matches query
+    # This handles cases like query "Sở hữu chéo giữa các công ty trong nhóm công ty"
+    # which should match "Điều 12. Sở hữu chéo giữa các công ty trong nhóm công ty"
+    query_match_count = 0
+    if query and text_chunks_db:
+        import re
+        # Normalize query: lowercase, strip, remove extra spaces and punctuation
+        query_normalized = re.sub(r'[^\w\s]', '', query.lower().strip())
+        query_normalized = ' '.join(query_normalized.split())
+        
+        # Only do this for queries that look like article titles (> 15 chars)
+        if len(query_normalized) > 15:
+            try:
+                all_chunk_keys = list(text_chunks_db._data.keys()) if hasattr(text_chunks_db, '_data') else []
+                for chunk_key in all_chunk_keys:
+                    if chunk_key in seen_chunk_ids:
+                        continue
+                    try:
+                        chunk_data = await text_chunks_db.get_by_id(chunk_key)
+                        if not chunk_data:
+                            continue
+                        content = chunk_data.get("content", "")
+                        # Look for pattern "Điều X. <Title>" where Title matches query
+                        # Extract article title from content
+                        title_match = re.search(r'Điều\s+\d+[a-z]?\.\s*([^\n]+)', content)
+                        if title_match:
+                            # Normalize article title same way
+                            article_title = re.sub(r'[^\w\s]', '', title_match.group(1).lower().strip())
+                            article_title = ' '.join(article_title.split())
+                            # Check if query is very similar to article title (80% overlap)
+                            if query_normalized in article_title or article_title in query_normalized:
+                                seen_chunk_ids.add(chunk_key)
+                                merged_chunks.append({
+                                    "content": content,
+                                    "file_path": chunk_data.get("file_path", "unknown"),
+                                    "chunk_id": chunk_key,
+                                    "is_priority": True,
+                                    "is_query_title_match": True,
+                                    "source": "query_title_match",
+                                })
+                                query_match_count += 1
+                                logger.info(f"DEBUG: Query title match - injected chunk {chunk_key[:30]} with title '{article_title[:50]}'")
+                                if query_match_count >= 3:  # Limit to top 3 matches
+                                    break
+                    except Exception as e:
+                        continue
+            except Exception as e:
+                logger.debug(f"Error in query title matching: {e}")
+    
+    if query_match_count > 0:
+        logger.info(f"Injected {query_match_count} chunks matching query title")
+    
+    # NEW: Pre-inject ALL main chunks AND their amendment chunks as priority
+    # This ensures BOTH original content and amendment content are included
+    pre_injected_count = 0
+    for main_chunk_id, amend_chunks in amendment_chunk_map.items():
+        # First: inject the MAIN chunk (original content that is being amended)
+        if main_chunk_id not in seen_chunk_ids and main_chunk_id in main_chunk_content_map:
+            main_chunk = main_chunk_content_map[main_chunk_id]
+            seen_chunk_ids.add(main_chunk_id)
+            merged_chunks.append({
+                "content": main_chunk.get("content", ""),
+                "file_path": main_chunk.get("file_path", "unknown_source"),
+                "chunk_id": main_chunk_id,
+                "is_priority": True,
+                "is_main_amended": True,
+                "source": "main_chunk_priority",
+            })
+            pre_injected_count += 1
+            logger.info(f"DEBUG: Pre-injected MAIN chunk {main_chunk_id[:20]}")
+        
+        # Then: inject all amendment chunks
+        for amend_chunk in amend_chunks:
+            amend_id = amend_chunk.get("chunk_id")
+            if amend_id and amend_id not in seen_chunk_ids:
+                seen_chunk_ids.add(amend_id)
+                merged_chunks.append({
+                    "content": amend_chunk["content"],
+                    "file_path": amend_chunk.get("file_path", "unknown_source"),
+                    "chunk_id": amend_id,
+                    "is_priority": True,
+                    "is_amendment": True,
+                    "source": "amendment_priority",
+                })
+                pre_injected_count += 1
+                logger.info(f"DEBUG: Pre-injected amendment chunk {amend_id[:20]} for main chunk {main_chunk_id[:20]}")
+    
+    if pre_injected_count > 0:
+        logger.info(f"Pre-injected {pre_injected_count} main+amendment chunks as top priority")
+    
+    # NEW: Detect and resolve cross-references in pre-injected chunks
+    # Scan content for patterns like "quy định tại khoản X Điều Y" and inject referenced chunks
+    cross_ref_injection_count = 0
+    for chunk in merged_chunks[:]:  # Iterate over copy to allow modification
+        content = chunk.get("content", "")
+        cross_refs = _detect_cross_references(content)
+        if cross_refs:
+            logger.info(f"DEBUG: Found {len(cross_refs)} cross-references in chunk {(chunk.get('chunk_id') or '')[:30]}: {[r.get('full_match', '') for r in cross_refs[:3]]}")
+            source_file_path = chunk.get("file_path")
+            resolved_chunks = await _resolve_cross_reference_chunks(
+                cross_refs, text_chunks_db, seen_chunk_ids, source_file_path
+            )
+            for resolved_chunk in resolved_chunks:
+                merged_chunks.append(resolved_chunk)
+                cross_ref_injection_count += 1
+    
+    if cross_ref_injection_count > 0:
+        logger.info(f"Injected {cross_ref_injection_count} cross-reference chunks from pre-injected")
+    
+    # Multi-hop: Scan ALL resolved cross-ref chunks for NESTED references (1 level deep)
+    # This runs AFTER both pre-injected and vector chunk cross-ref resolutions
+    # IMPORTANT: Insert nested chunks RIGHT AFTER parent chunk to ensure they survive truncation
+    nested_cross_ref_count = 0
+    all_cross_ref_chunks = [c for c in merged_chunks if c.get("is_cross_reference")]
+    nested_chunks_to_insert = []  # List of (parent_chunk_id, resolved_chunk) pairs
+    
+    for chunk in all_cross_ref_chunks:
+        content = chunk.get("content", "")
+        parent_chunk_id = chunk.get("chunk_id", "")
+        cross_refs = _detect_cross_references(content)
+        if cross_refs:
+            logger.info(f"DEBUG: Found {len(cross_refs)} NESTED cross-refs in chunk {parent_chunk_id[:30] if parent_chunk_id else ''}: {[r.get('full_match', '') for r in cross_refs[:2]]}")
+            source_file_path = chunk.get("file_path")
+            resolved_chunks = await _resolve_cross_reference_chunks(
+                cross_refs, text_chunks_db, seen_chunk_ids, source_file_path
+            )
+            for resolved_chunk in resolved_chunks:
+                resolved_chunk["is_nested_cross_reference"] = True
+                resolved_chunk["nested_from"] = parent_chunk_id
+                nested_chunks_to_insert.append((parent_chunk_id, resolved_chunk))
+                nested_cross_ref_count += 1
+    
+    # Insert nested chunks right after their parent chunks
+    for parent_chunk_id, nested_chunk in reversed(nested_chunks_to_insert):
+        # Find parent chunk position
+        parent_idx = None
+        for i, c in enumerate(merged_chunks):
+            if c.get("chunk_id") == parent_chunk_id:
+                parent_idx = i
+                break
+        if parent_idx is not None:
+            merged_chunks.insert(parent_idx + 1, nested_chunk)
+        else:
+            # If parent not found, append to end
+            merged_chunks.append(nested_chunk)
+    
+    if nested_cross_ref_count > 0:
+        logger.info(f"Injected {nested_cross_ref_count} NESTED cross-reference chunks (inserted after parents)")
+    
+    # NEW: Scan ALL chunks for amendment_ref patterns (not just cross-ref chunks)
+    # E.g., "[Điểm này được sửa đổi bởi Khoản 6 Điều 1 Luật DN sửa đổi 2025]"
+    # These need to be resolved to inject the actual amendment content
+    amendment_ref_injection_count = 0
+    for chunk in merged_chunks[:]:  # Iterate over copy
+        # Skip chunks that are already amendment content to avoid infinite loops
+        if chunk.get("is_amendment_content"):
+            continue
+        
+        content = chunk.get("content", "")
+        parent_chunk_id = chunk.get("chunk_id", "")
+        
+        # Detect amendment_ref patterns in this chunk
+        cross_refs = _detect_cross_references(content)
+        amendment_refs = [r for r in cross_refs if r.get("type") == "amendment_ref"]
+        
+        if amendment_refs:
+            logger.info(f"DEBUG: Found {len(amendment_refs)} amendment_ref in cross-ref chunk {parent_chunk_id[:30] if parent_chunk_id else ''}: {[r.get('full_match', '')[:50] for r in amendment_refs[:2]]}")
+            chunk_file_path = chunk.get("file_path", "")
+            resolved_chunks = await _resolve_cross_reference_chunks(
+                amendment_refs, text_chunks_db, seen_chunk_ids, chunk_file_path
+            )
+            for resolved_chunk in resolved_chunks:
+                resolved_chunk["is_amendment_content"] = True
+                resolved_chunk["amendment_from"] = parent_chunk_id
+                # Insert right after parent chunk
+                parent_idx = None
+                for i, c in enumerate(merged_chunks):
+                    if c.get("chunk_id") == parent_chunk_id:
+                        parent_idx = i
+                        break
+                if parent_idx is not None:
+                    merged_chunks.insert(parent_idx + 1, resolved_chunk)
+                else:
+                    merged_chunks.append(resolved_chunk)
+                amendment_ref_injection_count += 1
+                logger.info(f"DEBUG: Injected amendment content chunk {resolved_chunk.get('chunk_id', '')[:30]} from {parent_chunk_id[:30] if parent_chunk_id else ''}")
+    
+    if amendment_ref_injection_count > 0:
+        logger.info(f"Injected {amendment_ref_injection_count} amendment content chunks from cross-ref annotations")
     
     # THEN: Add priority chunks from entity_chunks (from supplementary entities)
     # Sort priority chunks by entity_rank (highest first) to ensure high-rank entities' chunks come first
@@ -4145,14 +4995,16 @@ async def _merge_all_chunks(
     
     # Debug: Show top 20 priority chunks with entity_rank
     for i, chunk in enumerate(priority_entity_chunks[:20]):
-        chunk_id = chunk.get("chunk_id", "") or chunk.get("id", "")
+        # Qdrant stores chunk ID in __id__ field within payload
+        chunk_id = chunk.get("__id__") or chunk.get("chunk_id", "") or chunk.get("id", "")
         entity_rank = chunk.get("entity_rank", 0)
         content = chunk.get("content", "")
         has_bracket = 1 if re.search(r'\[[^\]]+\]', content) else 0
         logger.info(f"DEBUG: Priority chunk #{i+1}: rank={entity_rank}, bracket={has_bracket}, id={chunk_id[:30]}...")
     
     for chunk in priority_entity_chunks:
-        chunk_id = chunk.get("chunk_id") or chunk.get("id")
+        # Qdrant stores chunk ID in __id__ field within payload
+        chunk_id = chunk.get("__id__") or chunk.get("chunk_id") or chunk.get("id")
         if chunk_id and chunk_id not in seen_chunk_ids:
             seen_chunk_ids.add(chunk_id)
             merged_chunks.append(
@@ -4164,6 +5016,10 @@ async def _merge_all_chunks(
                 }
             )
             priority_count += 1
+            
+            # Inject amendment chunks right after this priority chunk
+            amendment_injection_count += inject_amendment_chunks(chunk_id, merged_chunks, seen_chunk_ids)
+            
             # Debug: Check if this is Khoản 10 chunk
             if "f5c8b3c5" in chunk_id:
                 logger.info(f"DEBUG: Added Khoản 10 chunk f5c8b3c5 to merged_chunks at position {len(merged_chunks)}, entity_rank={chunk.get('entity_rank', 0)}, content[:100]={chunk.get('content', '')[:100]}")
@@ -4182,7 +5038,8 @@ async def _merge_all_chunks(
         # Add from vector chunks first (Naive mode)
         if i < len(vector_chunks):
             chunk = vector_chunks[i]
-            chunk_id = chunk.get("chunk_id") or chunk.get("id")
+            # Qdrant stores chunk ID in __id__ field within payload
+            chunk_id = chunk.get("__id__") or chunk.get("chunk_id") or chunk.get("id")
             if chunk_id and chunk_id not in seen_chunk_ids:
                 seen_chunk_ids.add(chunk_id)
                 merged_chunks.append(
@@ -4192,12 +5049,15 @@ async def _merge_all_chunks(
                         "chunk_id": chunk_id,
                     }
                 )
+                # Inject amendment chunks after this chunk
+                amendment_injection_count += inject_amendment_chunks(chunk_id, merged_chunks, seen_chunk_ids)
 
         # Add from entity chunks (Local mode) - skip priority ones (already added)
         if i < len(entity_chunks):
             chunk = entity_chunks[i]
             if not chunk.get("is_priority"):  # Skip priority chunks (already added)
-                chunk_id = chunk.get("chunk_id") or chunk.get("id")
+                # Qdrant stores chunk ID in __id__ field within payload
+                chunk_id = chunk.get("__id__") or chunk.get("chunk_id") or chunk.get("id")
                 if chunk_id and chunk_id not in seen_chunk_ids:
                     seen_chunk_ids.add(chunk_id)
                     merged_chunks.append(
@@ -4207,11 +5067,14 @@ async def _merge_all_chunks(
                             "chunk_id": chunk_id,
                         }
                     )
+                    # Inject amendment chunks after this chunk
+                    amendment_injection_count += inject_amendment_chunks(chunk_id, merged_chunks, seen_chunk_ids)
 
         # Add from relation chunks (Global mode)
         if i < len(relation_chunks):
             chunk = relation_chunks[i]
-            chunk_id = chunk.get("chunk_id") or chunk.get("id")
+            # Qdrant stores chunk ID in __id__ field within payload
+            chunk_id = chunk.get("__id__") or chunk.get("chunk_id") or chunk.get("id")
             if chunk_id and chunk_id not in seen_chunk_ids:
                 seen_chunk_ids.add(chunk_id)
                 merged_chunks.append(
@@ -4221,9 +5084,11 @@ async def _merge_all_chunks(
                         "chunk_id": chunk_id,
                     }
                 )
+                # Inject amendment chunks after this chunk
+                amendment_injection_count += inject_amendment_chunks(chunk_id, merged_chunks, seen_chunk_ids)
 
     logger.info(
-        f"Round-robin merged chunks: {origin_len} -> {len(merged_chunks)} (priority={priority_count}, deduplicated {origin_len - len(merged_chunks)})"
+        f"Round-robin merged chunks: {origin_len} -> {len(merged_chunks)} (priority={priority_count}, amendment_injections={amendment_injection_count}, deduplicated {origin_len - len(merged_chunks)})"
     )
 
     return merged_chunks
@@ -4327,6 +5192,30 @@ async def _build_context_str(
     
     logger.info(f"DEBUG: Output truncated_chunks count: {len(truncated_chunks)}")
     
+    # Check if cross-ref chunk d543571a (Điều 201) is in truncated
+    dieu201_in_truncated = any('d543571a' in str(c.get('chunk_id', '')) for c in truncated_chunks)
+    dieu201_in_merged = any('d543571a' in str(c.get('chunk_id', '')) for c in merged_chunks)
+    if dieu201_in_merged:
+        pos = next((i for i, c in enumerate(merged_chunks) if 'd543571a' in str(c.get('chunk_id', ''))), -1)
+        logger.info(f"DEBUG: Điều 201 chunk d543571a in MERGED at position {pos}")
+        if dieu201_in_truncated:
+            logger.info(f"DEBUG: Điều 201 chunk d543571a IN truncated_chunks ✓")
+        else:
+            logger.info(f"DEBUG: Điều 201 chunk d543571a NOT in truncated_chunks ✗")
+    
+    # Check if cross-ref chunk e5b872f0 (Điều 200) is in truncated
+    dieu200_in_truncated = any('e5b872f0' in str(c.get('chunk_id', '')) for c in truncated_chunks)
+    dieu200_in_merged = any('e5b872f0' in str(c.get('chunk_id', '')) for c in merged_chunks)
+    if dieu200_in_merged:
+        pos200 = next((i for i, c in enumerate(merged_chunks) if 'e5b872f0' in str(c.get('chunk_id', ''))), -1)
+        logger.info(f"DEBUG: Điều 200 chunk e5b872f0 in MERGED at position {pos200}")
+        if dieu200_in_truncated:
+            logger.info(f"DEBUG: Điều 200 chunk e5b872f0 IN truncated_chunks ✓")
+        else:
+            logger.info(f"DEBUG: Điều 200 chunk e5b872f0 NOT in truncated_chunks ✗")
+    else:
+        logger.info(f"DEBUG: Điều 200 chunk e5b872f0 NOT in merged_chunks ✗")
+    
     # Check if Khoản 10 chunk is in truncated_chunks
     khoan10_chunks = [c for c in truncated_chunks if 'chủ sở hữu hưởng lợi' in c.get('content', '').lower() or 'beneficial owner' in c.get('content', '').lower()]
     if khoan10_chunks:
@@ -4350,6 +5239,18 @@ async def _build_context_str(
             logger.info(f"DEBUG: Khoản 5a chunk ffacaa2e in MERGED at position {pos}, but NOT in truncated")
         else:
             logger.info(f"DEBUG: Khoản 5a chunk ffacaa2e NOT in merged_chunks")
+
+    # Check if Điều 93 chunk is in truncated_chunks
+    dieu93_truncated = [c for c in truncated_chunks if '22f37374' in str(c.get('chunk_id', ''))]
+    if dieu93_truncated:
+        logger.info(f"DEBUG: Điều 93 chunk 22f37374 IN truncated_chunks")
+    else:
+        dieu93_merged = [c for c in merged_chunks if '22f37374' in str(c.get('chunk_id', ''))]
+        if dieu93_merged:
+            pos = merged_chunks.index(dieu93_merged[0]) if dieu93_merged else -1
+            logger.info(f"DEBUG: Điều 93 chunk 22f37374 in MERGED at position {pos}/{len(merged_chunks)}, but NOT in truncated (truncated count={len(truncated_chunks)})")
+        else:
+            logger.info(f"DEBUG: Điều 93 chunk 22f37374 NOT in merged_chunks")
 
     # Generate reference list from truncated chunks using the new common function
     reference_list, truncated_chunks = generate_reference_list_from_chunks(
@@ -4449,6 +5350,7 @@ async def _build_query_context(
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
     chunks_vdb: BaseVectorStorage = None,
+    entity_chunks_db: BaseKVStorage = None,
 ) -> QueryContextResult | None:
     """
     Main query context building function using the new 4-stage architecture:
@@ -4486,6 +5388,7 @@ async def _build_query_context(
         search_result,
         query_param,
         text_chunks_db.global_config,
+        ll_keywords=ll_keywords,  # Pass keywords to boost matching entities
     )
 
     # Stage 3: Merge chunks using filtered entities/relations
@@ -4500,6 +5403,7 @@ async def _build_query_context(
         chunks_vdb=chunks_vdb,
         chunk_tracking=search_result["chunk_tracking"],
         query_embedding=search_result["query_embedding"],
+        entity_chunks_db=entity_chunks_db,
     )
 
     if (
@@ -4572,11 +5476,35 @@ async def _get_node_data(
 
     results = await entities_vdb.query(query, top_k=query_param.top_k)
 
+    # Extract all entity IDs from your results list
+    node_ids = [r["entity_name"] for r in results] if results else []
+    seen_entity_ids = set(node_ids)
+    
+    # Also search entities by description if query contains concept keywords
+    # This helps find entities like "Điều 195" when querying for concepts like "sở hữu chéo"
+    query_keywords = [kw.strip() for kw in query.split(",") if kw.strip()]
+    if query_keywords:
+        try:
+            description_results = await knowledge_graph_inst.search_entities_by_description(
+                keywords=query_keywords, limit=10
+            )
+            for ent in description_results:
+                ent_id = ent.get("entity_id")
+                if ent_id and ent_id not in seen_entity_ids:
+                    node_ids.append(ent_id)
+                    seen_entity_ids.add(ent_id)
+                    # Add to results with a lower similarity score
+                    results.append({
+                        "entity_name": ent_id,
+                        "created_at": None,
+                        "_from_description_search": True  # Mark for debugging
+                    })
+                    logger.debug(f"Added entity from description search: {ent_id}")
+        except Exception as e:
+            logger.warning(f"Description search failed: {e}")
+
     if not len(results):
         return [], []
-
-    # Extract all entity IDs from your results list
-    node_ids = [r["entity_name"] for r in results]
 
     # Call the batch node retrieval and degree functions concurrently.
     nodes_dict, degrees_dict = await asyncio.gather(

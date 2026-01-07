@@ -3188,63 +3188,44 @@ def generate_reference_list_from_chunks(
     chunks: list[dict],
 ) -> tuple[list[dict], list[dict]]:
     """
-    Generate reference list from chunks, prioritizing by occurrence frequency.
+    Generate reference list from chunks, assigning unique reference_id per chunk.
 
-    This function extracts file_paths from chunks, counts their occurrences,
-    sorts by frequency and first appearance order, creates reference_id mappings,
-    and builds a reference_list structure.
+    Each chunk gets its own reference_id so frontend can display and reference 
+    individual legal articles separately (e.g., Điều 52, Điều 108 from the same file
+    will have different reference_ids).
 
     Args:
-        chunks: List of chunk dictionaries with file_path information
+        chunks: List of chunk dictionaries with file_path and content information
 
     Returns:
         tuple: (reference_list, updated_chunks_with_reference_ids)
-            - reference_list: List of dicts with reference_id and file_path
+            - reference_list: List of dicts with reference_id, file_path, and chunk_id
             - updated_chunks_with_reference_ids: Original chunks with reference_id field added
     """
     if not chunks:
         return [], []
 
-    # 1. Extract all valid file_paths and count their occurrences
-    file_path_counts = {}
-    for chunk in chunks:
-        file_path = chunk.get("file_path", "")
-        if file_path and file_path != "unknown_source":
-            file_path_counts[file_path] = file_path_counts.get(file_path, 0) + 1
-
-    # 2. Sort file paths by frequency (descending), then by first appearance order
-    # Create a list of (file_path, count, first_index) tuples
-    file_path_with_indices = []
-    seen_paths = set()
-    for i, chunk in enumerate(chunks):
-        file_path = chunk.get("file_path", "")
-        if file_path and file_path != "unknown_source" and file_path not in seen_paths:
-            file_path_with_indices.append((file_path, file_path_counts[file_path], i))
-            seen_paths.add(file_path)
-
-    # Sort by count (descending), then by first appearance index (ascending)
-    sorted_file_paths = sorted(file_path_with_indices, key=lambda x: (-x[1], x[2]))
-    unique_file_paths = [item[0] for item in sorted_file_paths]
-
-    # 3. Create mapping from file_path to reference_id (prioritized by frequency)
-    file_path_to_ref_id = {}
-    for i, file_path in enumerate(unique_file_paths):
-        file_path_to_ref_id[file_path] = str(i + 1)
-
-    # 4. Add reference_id field to each chunk
+    # Assign unique reference_id to each chunk (1-indexed)
     updated_chunks = []
-    for chunk in chunks:
+    reference_list = []
+    
+    for i, chunk in enumerate(chunks):
         chunk_copy = chunk.copy()
+        ref_id = str(i + 1)
+        
         file_path = chunk_copy.get("file_path", "")
+        chunk_id = chunk_copy.get("chunk_id", chunk_copy.get("id", ""))
+        
         if file_path and file_path != "unknown_source":
-            chunk_copy["reference_id"] = file_path_to_ref_id[file_path]
+            chunk_copy["reference_id"] = ref_id
+            reference_list.append({
+                "reference_id": ref_id,
+                "file_path": file_path,
+                "chunk_id": chunk_id,
+            })
         else:
             chunk_copy["reference_id"] = ""
+            
         updated_chunks.append(chunk_copy)
-
-    # 5. Build reference_list
-    reference_list = []
-    for i, file_path in enumerate(unique_file_paths):
-        reference_list.append({"reference_id": str(i + 1), "file_path": file_path})
 
     return reference_list, updated_chunks

@@ -161,6 +161,12 @@ def check_frontend_build():
     Returns:
         bool: True if frontend is outdated, False if up-to-date or production environment
     """
+    # Skip frontend check if ENABLE_WEBUI is false
+    enable_webui = os.getenv("ENABLE_WEBUI", "true").lower()
+    if enable_webui in ("false", "0", "no"):
+        logger.info("WebUI disabled via ENABLE_WEBUI=false, skipping frontend check")
+        return False
+    
     webui_dir = Path(__file__).parent / "webui"
     index_html = webui_dir / "index.html"
 

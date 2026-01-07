@@ -421,63 +421,16 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             )  # higher priority for query
             embedding = embedding_result[0]
 
-        # Debug: log embedding info
-        import logging
-        logger = logging.getLogger(__name__)
-        
-        # Convert to list if numpy array
-        if hasattr(embedding, 'tolist'):
-            embedding_list = embedding.tolist()
-        else:
-            embedding_list = list(embedding)
-        
-        logger.info(f"[DEBUG] Query embedding dim: {len(embedding_list)}, collection: {self.final_namespace}, workspace: {self.effective_workspace}")
-        logger.info(f"[DEBUG] Embedding first 5 values: {embedding_list[:5]}")
-        logger.info(f"[DEBUG] Embedding type: {type(embedding)}, threshold: {self.cosine_better_than_threshold}")
-        logger.info(f"[DEBUG] _client is None: {self._client is None}, _initialized: {self._initialized}")
-        
-        # More debug: test direct query
-        try:
-            test_result = self._client.query_points(
-                collection_name=self.final_namespace,
-                query=embedding_list,
-                limit=5,
-                with_payload=True,
-            )
-            logger.info(f"[DEBUG] Direct query (no filter) returned {len(test_result.points)} results")
-            if test_result.points:
-                logger.info(f"[DEBUG] First result score: {test_result.points[0].score}, payload: {test_result.points[0].payload.get('entity_name', test_result.points[0].payload.get('src_id', '?'))}")
-        except Exception as e:
-            logger.error(f"[DEBUG] Direct query failed: {e}")
-
-        # Build filter
-        ws_filter = workspace_filter_condition(self.effective_workspace)
-        query_filter = models.Filter(must=[ws_filter])
-        logger.info(f"[DEBUG] Filter: workspace_key={ws_filter.key}, value={ws_filter.match.value}")
-        
-        # Test with same filter
-        try:
-            test_filtered = self._client.query_points(
-                collection_name=self.final_namespace,
-                query=embedding_list,
-                limit=5,
-                with_payload=True,
-                query_filter=query_filter,
-            )
-            logger.info(f"[DEBUG] Test WITH filter returned {len(test_filtered.points)} results")
-        except Exception as e:
-            logger.error(f"[DEBUG] Test with filter failed: {e}")
-
         results = self._client.query_points(
             collection_name=self.final_namespace,
-            query=embedding_list,  # Use list explicitly
+            query=embedding,
             limit=top_k,
             with_payload=True,
             score_threshold=self.cosine_better_than_threshold,
-            query_filter=query_filter,
+            query_filter=models.Filter(
+                must=[workspace_filter_condition(self.effective_workspace)]
+            ),
         ).points
-
-        logger.info(f"[DEBUG] Qdrant returned {len(results)} results")
 
         return [
             {

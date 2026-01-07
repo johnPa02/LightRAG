@@ -68,10 +68,17 @@ For EACH relationship, output EXACTLY 5 fields on ONE line:
 2) source_entity          — must EXACTLY match some entity_name you have output above
 3) target_entity          — must EXACTLY match some entity_name you have output above
 4) relationship_keywords  — 1–3 short keywords, separated by comma (e.g. "GUIDED_BY, biểu mẫu")
-5) relationship_description — one short sentence explaining the relation
+5) relationship_description — MUST include:
+   - The relationship type
+   - **The title/subject of the source entity** (e.g., "Điều 20 quy định về hồ sơ đăng ký doanh nghiệp")
+   - This helps with semantic search for topics like "hồ sơ đăng ký"
 
 **Format (RELATION line):**
 relation{tuple_delimiter}source_entity{tuple_delimiter}target_entity{tuple_delimiter}relationship_keywords{tuple_delimiter}relationship_description
+
+**IMPORTANT for relationship_description:**
+- BAD: "Điều 20 thuộc Nghị định 01/2021" (no topic info, useless for search)
+- GOOD: "Điều 20 quy định về hồ sơ đăng ký doanh nghiệp, thuộc Nghị định 01/2021" (contains topic)
 
 STRICT RULES FOR RELATIONS:
 - Do NOT output more or fewer than 5 fields.
@@ -99,11 +106,11 @@ STRICT RULES FOR RELATIONS:
 Suppose the delimiter is <|#|>. Then a correct output could look like:
 
 entity<|#|>Nghị định 168/2025/NĐ-CP<|#|>LawDocument<|#|>Nghị định quy định về đăng ký doanh nghiệp.
-entity<|#|>Điều 124<|#|>Article<|#|>Điều khoản thi hành của Nghị định 168/2025/NĐ-CP.
-entity<|#|>Khoản 2 Điều 124<|#|>Clause<|#|>Quy định việc thay thế các nghị định trước đây.
+entity<|#|>Điều 124<|#|>Article<|#|>Điều 124 quy định điều khoản thi hành của Nghị định 168/2025/NĐ-CP.
+entity<|#|>Khoản 2 Điều 124<|#|>Clause<|#|>Khoản 2 quy định việc thay thế các nghị định trước đây.
 
-relation<|#|>Điều 124<|#|>Nghị định 168/2025/NĐ-CP<|#|>IS_PART_OF_DOCUMENT<|#|>Điều 124 là một phần của Nghị định 168/2025/NĐ-CP.
-relation<|#|>Khoản 2 Điều 124<|#|>Nghị định 01/2021/NĐ-CP<|#|>REPEALS<|#|>Khoản 2 Điều 124 quy định việc thay thế Nghị định 01/2021/NĐ-CP.
+relation<|#|>Điều 124<|#|>Nghị định 168/2025/NĐ-CP<|#|>IS_PART_OF_DOCUMENT<|#|>Điều 124 quy định điều khoản thi hành, thuộc Nghị định 168/2025/NĐ-CP.
+relation<|#|>Khoản 2 Điều 124<|#|>Nghị định 01/2021/NĐ-CP<|#|>REPEALS<|#|>Khoản 2 Điều 124 quy định việc thay thế Nghị định 01/2021/NĐ-CP về đăng ký doanh nghiệp.
 
 <|COMPLETE|>
 
@@ -177,7 +184,12 @@ Căn cứ Điều 56 Nghị định 168/2025/NĐ-CP quy định về đăng ký 
 ```
 
 <Output>
-entity{tuple_delimiter}Nghị định 168/2025/NĐ-CP{tuple_delimiter}LawDocument{tuple_delimiter}Nghị định 168/2025/NĐ-CP là văn bản quy định về đăng ký doanh nghiệp và các thủ tục liên quan. entity{tuple_delimiter}Điều 56 - Nghị định 168/2025/NĐ-CP{tuple_delimiter}Article{tuple_delimiter}Điều 56 của Nghị định 168/2025/NĐ-CP quy định về đăng ký thay đổi nội dung hoạt động của chi nhánh và văn phòng đại diện. entity{tuple_delimiter}Khoản 1 - Điều 56 - Nghị định 168/2025/NĐ-CP{tuple_delimiter}Clause{tuple_delimiter}Khoản 1 của Điều 56 quy định hồ sơ bao gồm Thông báo thay đổi nội dung đăng ký hoạt động của chi nhánh. relation{tuple_delimiter}Điều 56 - Nghị định 168/2025/NĐ-CP{tuple_delimiter}Nghị định 168/2025/NĐ-CP{tuple_delimiter}IS_PART_OF_DOCUMENT{tuple_delimiter}Điều 56 thuộc Nghị định 168/2025/NĐ-CP. relation{tuple_delimiter}Khoản 1 - Điều 56 - Nghị định 168/2025/NĐ-CP{tuple_delimiter}Điều 56 - Nghị định 168/2025/NĐ-CP{tuple_delimiter}IS_PART_OF_ARTICLE{tuple_delimiter}Khoản 1 thuộc Điều 56. relation{tuple_delimiter}Điều 56 - Nghị định 168/2025/NĐ-CP{tuple_delimiter}Nghị định 168/2025/NĐ-CP{tuple_delimiter}REFERENCES{tuple_delimiter}Văn bản có viện dẫn đến Điều 56 của Nghị định 168/2025/NĐ-CP. {completion_delimiter}
+entity{tuple_delimiter}Nghị định 168/2025/NĐ-CP{tuple_delimiter}LawDocument{tuple_delimiter}Nghị định 168/2025/NĐ-CP là văn bản quy định về đăng ký doanh nghiệp và các thủ tục liên quan.
+entity{tuple_delimiter}Điều 56 - Nghị định 168/2025/NĐ-CP{tuple_delimiter}Article{tuple_delimiter}Điều 56 quy định về đăng ký thay đổi nội dung hoạt động của chi nhánh và văn phòng đại diện.
+entity{tuple_delimiter}Khoản 1 - Điều 56 - Nghị định 168/2025/NĐ-CP{tuple_delimiter}Clause{tuple_delimiter}Khoản 1 quy định hồ sơ bao gồm Thông báo thay đổi nội dung đăng ký hoạt động của chi nhánh.
+relation{tuple_delimiter}Điều 56 - Nghị định 168/2025/NĐ-CP{tuple_delimiter}Nghị định 168/2025/NĐ-CP{tuple_delimiter}IS_PART_OF_DOCUMENT, đăng ký thay đổi, chi nhánh{tuple_delimiter}Điều 56 quy định về đăng ký thay đổi nội dung hoạt động chi nhánh và văn phòng đại diện, thuộc Nghị định 168/2025/NĐ-CP.
+relation{tuple_delimiter}Khoản 1 - Điều 56 - Nghị định 168/2025/NĐ-CP{tuple_delimiter}Điều 56 - Nghị định 168/2025/NĐ-CP{tuple_delimiter}IS_PART_OF_ARTICLE, hồ sơ đăng ký{tuple_delimiter}Khoản 1 quy định hồ sơ đăng ký thay đổi hoạt động chi nhánh, thuộc Điều 56.
+{completion_delimiter}
 
 """,
     """<Input Text>
@@ -186,32 +198,54 @@ Theo Điểm b Khoản 2 Điều 7 Luật Doanh nghiệp 2020, doanh nghiệp c�
 ```
 
 <Output>
-entity{tuple_delimiter}Luật Doanh nghiệp 2020{tuple_delimiter}LawDocument{tuple_delimiter}Luật Doanh nghiệp 2020 là văn bản quy định về thành lập, tổ chức và hoạt động của doanh nghiệp. entity{tuple_delimiter}Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Article{tuple_delimiter}Điều 7 của Luật Doanh nghiệp 2020 quy định về quyền và nghĩa vụ của doanh nghiệp. entity{tuple_delimiter}Khoản 2 - Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Clause{tuple_delimiter}Khoản 2 của Điều 7 quy định về các nghĩa vụ của doanh nghiệp. entity{tuple_delimiter}Điểm b - Khoản 2 - Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Point{tuple_delimiter}Điểm b của Khoản 2 Điều 7 quy định nghĩa vụ kê khai trung thực và chính xác. relation{tuple_delimiter}Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Luật Doanh nghiệp 2020{tuple_delimiter}IS_PART_OF_DOCUMENT{tuple_delimiter}Điều 7 thuộc Luật Doanh nghiệp 2020. relation{tuple_delimiter}Khoản 2 - Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}IS_PART_OF_ARTICLE{tuple_delimiter}Khoản 2 thuộc Điều 7. relation{tuple_delimiter}Điểm b - Khoản 2 - Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Khoản 2 - Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}IS_PART_OF_CLAUSE{tuple_delimiter}Điểm b thuộc Khoản 2 của Điều 7. relation{tuple_delimiter}Điểm b - Khoản 2 - Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Luật Doanh nghiệp 2020{tuple_delimiter}REFERENCES{tuple_delimiter}Có viện dẫn đến quy định tại Điểm b Khoản 2 Điều 7 Luật Doanh nghiệp 2020. {completion_delimiter}
+entity{tuple_delimiter}Luật Doanh nghiệp 2020{tuple_delimiter}LawDocument{tuple_delimiter}Luật Doanh nghiệp 2020 là văn bản quy định về thành lập, tổ chức và hoạt động của doanh nghiệp.
+entity{tuple_delimiter}Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Article{tuple_delimiter}Điều 7 quy định về quyền và nghĩa vụ của doanh nghiệp.
+entity{tuple_delimiter}Khoản 2 - Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Clause{tuple_delimiter}Khoản 2 quy định về các nghĩa vụ của doanh nghiệp.
+entity{tuple_delimiter}Điểm b - Khoản 2 - Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Point{tuple_delimiter}Điểm b quy định nghĩa vụ kê khai trung thực và chính xác thông tin đăng ký.
+relation{tuple_delimiter}Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Luật Doanh nghiệp 2020{tuple_delimiter}IS_PART_OF_DOCUMENT, quyền nghĩa vụ doanh nghiệp{tuple_delimiter}Điều 7 quy định về quyền và nghĩa vụ của doanh nghiệp, thuộc Luật Doanh nghiệp 2020.
+relation{tuple_delimiter}Khoản 2 - Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}IS_PART_OF_ARTICLE, nghĩa vụ doanh nghiệp{tuple_delimiter}Khoản 2 quy định các nghĩa vụ của doanh nghiệp, thuộc Điều 7.
+relation{tuple_delimiter}Điểm b - Khoản 2 - Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}Khoản 2 - Điều 7 - Luật Doanh nghiệp 2020{tuple_delimiter}IS_PART_OF_CLAUSE, kê khai thông tin{tuple_delimiter}Điểm b quy định nghĩa vụ kê khai trung thực thông tin đăng ký, thuộc Khoản 2.
+{completion_delimiter}
 
 """,
     """<Input Text>
 ```
-Chunk 14 đề cập đến quy định về hồ sơ đăng ký doanh nghiệp theo Nghị định 01/2021/NĐ-CP tại Điều 20.
-
+Điều 20 Nghị định 01/2021/NĐ-CP quy định về hồ sơ đăng ký công ty hợp danh. Khoản 1 nêu các giấy tờ cần có trong hồ sơ.
 ```
 <Output>
-entity{tuple_delimiter}Nghị định 01/2021/NĐ-CP{tuple_delimiter}LawDocument{tuple_delimiter}Nghị định 01/2021/NĐ-CP là văn bản quy định về đăng ký doanh nghiệp. entity{tuple_delimiter}Điều 20 - Nghị định 01/2021/NĐ-CP{tuple_delimiter}Article{tuple_delimiter}Điều 20 của Nghị định 01/2021/NĐ-CP quy định về hồ sơ đăng ký doanh nghiệp. entity{tuple_delimiter}Chunk 14 - ND01/2021{tuple_delimiter}Chunk{tuple_delimiter}Chunk 14 chứa nội dung mô tả quy định tại Điều 20 của Nghị định 01/2021/NĐ-CP. relation{tuple_delimiter}Điều 20 - Nghị định 01/2021/NĐ-CP{tuple_delimiter}Nghị định 01/2021/NĐ-CP{tuple_delimiter}IS_PART_OF_DOCUMENT{tuple_delimiter}Điều 20 thuộc Nghị định 01/2021/NĐ-CP. relation{tuple_delimiter}Chunk 14 - ND01/2021{tuple_delimiter}Điều 20 - Nghị định 01/2021/NĐ-CP{tuple_delimiter}DESCRIBES{tuple_delimiter}Chunk mô tả nội dung của Điều 20. relation{tuple_delimiter}Chunk 14 - ND01/2021{tuple_delimiter}Nghị định 01/2021/NĐ-CP{tuple_delimiter}IS_PART_OF_DOCUMENT{tuple_delimiter}Chunk 14 được trích từ Nghị định 01/2021/NĐ-CP. {completion_delimiter}
-
-""",
-    """<Input Text>
-```
-Điều 25 của Nghị định 122/2021/NĐ-CP dẫn chiếu đến Điều 21 của Nghị định này.
-```
-<Output>
-entity{tuple_delimiter}Nghị định 122/2021/NĐ-CP{tuple_delimiter}LawDocument{tuple_delimiter}Nghị định 122/2021/NĐ-CP quy định về xử phạt vi phạm hành chính trong lĩnh vực kế toán. entity{tuple_delimiter}Điều 25 - Nghị định 122/2021/NĐ-CP{tuple_delimiter}Article{tuple_delimiter}Điều 25 của Nghị định 122/2021/NĐ-CP có nội dung dẫn chiếu đến Điều 21. entity{tuple_delimiter}Điều 21 - Nghị định 122/2021/NĐ-CP{tuple_delimiter}Article{tuple_delimiter}Điều 21 của Nghị định 122/2021/NĐ-CP được viện dẫn bởi Điều 25. relation{tuple_delimiter}Điều 25 - Nghị định 122/2021/NĐ-CP{tuple_delimiter}Nghị định 122/2021/NĐ-CP{tuple_delimiter}IS_PART_OF_DOCUMENT{tuple_delimiter}Điều 25 thuộc Nghị định 122/2021/NĐ-CP. relation{tuple_delimiter}Điều 21 - Nghị định 122/2021/NĐ-CP{tuple_delimiter}Nghị định 122/2021/NĐ-CP{tuple_delimiter}IS_PART_OF_DOCUMENT{tuple_delimiter}Điều 21 thuộc Nghị định 122/2021/NĐ-CP. relation{tuple_delimiter}Điều 25 - Nghị định 122/2021/NĐ-CP{tuple_delimiter}Điều 21 - Nghị định 122/2021/NĐ-CP{tuple_delimiter}REFERENCES{tuple_delimiter}Điều 25 có dẫn chiếu đến Điều 21 của cùng Nghị định. {completion_delimiter}
+entity{tuple_delimiter}Nghị định 01/2021/NĐ-CP{tuple_delimiter}LawDocument{tuple_delimiter}Nghị định 01/2021/NĐ-CP là văn bản quy định về đăng ký doanh nghiệp.
+entity{tuple_delimiter}Điều 20 - Nghị định 01/2021/NĐ-CP{tuple_delimiter}Article{tuple_delimiter}Điều 20 quy định về hồ sơ đăng ký công ty hợp danh.
+entity{tuple_delimiter}Khoản 1 - Điều 20 - Nghị định 01/2021/NĐ-CP{tuple_delimiter}Clause{tuple_delimiter}Khoản 1 nêu các giấy tờ cần có trong hồ sơ đăng ký công ty hợp danh.
+relation{tuple_delimiter}Điều 20 - Nghị định 01/2021/NĐ-CP{tuple_delimiter}Nghị định 01/2021/NĐ-CP{tuple_delimiter}IS_PART_OF_DOCUMENT, hồ sơ đăng ký, công ty hợp danh{tuple_delimiter}Điều 20 quy định về hồ sơ đăng ký công ty hợp danh, thuộc Nghị định 01/2021/NĐ-CP.
+relation{tuple_delimiter}Khoản 1 - Điều 20 - Nghị định 01/2021/NĐ-CP{tuple_delimiter}Điều 20 - Nghị định 01/2021/NĐ-CP{tuple_delimiter}IS_PART_OF_ARTICLE, giấy tờ hồ sơ{tuple_delimiter}Khoản 1 nêu các giấy tờ trong hồ sơ đăng ký công ty hợp danh, thuộc Điều 20.
+{completion_delimiter}
 
 """,
     """<Input Text>
 ```
-Chunk 3 mô tả nội dung Điểm c Khoản 3 Điều 12 Luật Đầu tư 2020. Theo quy định tại Khoản 4 Điều 15 của Luật này, nhà đầu tư phải thực hiện đầy đủ nghĩa vụ tài chính.
+Điều 25 của Nghị định 122/2021/NĐ-CP quy định về xử phạt vi phạm trong hoạt động kế toán. Điều này dẫn chiếu đến Điều 21 của Nghị định cùng văn bản.
 ```
 <Output>
-entity{tuple_delimiter}Luật Đầu tư 2020{tuple_delimiter}LawDocument{tuple_delimiter}Luật Đầu tư 2020 quy định về hoạt động đầu tư kinh doanh tại Việt Nam. entity{tuple_delimiter}Điều 12 - Luật Đầu tư 2020{tuple_delimiter}Article{tuple_delimiter}Điều 12 của Luật Đầu tư 2020 quy định về các hành vi bị cấm trong hoạt động đầu tư. entity{tuple_delimiter}Khoản 3 - Điều 12 - Luật Đầu tư 2020{tuple_delimiter}Clause{tuple_delimiter}Khoản 3 Điều 12 quy định chi tiết các hành vi bị cấm. entity{tuple_delimiter}Điểm c - Khoản 3 - Điều 12 - Luật Đầu tư 2020{tuple_delimiter}Point{tuple_delimiter}Điểm c Khoản 3 Điều 12 mô tả một hành vi vi phạm trong hoạt động đầu tư. entity{tuple_delimiter}Điều 15 - Luật Đầu tư 2020{tuple_delimiter}Article{tuple_delimiter}Điều 15 quy định về nghĩa vụ tài chính của nhà đầu tư. entity{tuple_delimiter}Khoản 4 - Điều 15 - Luật Đầu tư 2020{tuple_delimiter}Clause{tuple_delimiter}Khoản 4 Điều 15 quy định nhà đầu tư phải thực hiện đầy đủ nghĩa vụ tài chính. entity{tuple_delimiter}Chunk 3 - LĐT2020{tuple_delimiter}Chunk{tuple_delimiter}Chunk 3 mô tả nội dung tại Điểm c Khoản 3 Điều 12 của Luật Đầu tư 2020. relation{tuple_delimiter}Điều 12 - Luật Đầu tư 2020{tuple_delimiter}Luật Đầu tư 2020{tuple_delimiter}IS_PART_OF_DOCUMENT{tuple_delimiter}Điều 12 thuộc Luật Đầu tư 2020. relation{tuple_delimiter}Khoản 3 - Điều 12 - Luật Đầu tư 2020{tuple_delimiter}Điều 12 - Luật Đầu tư 2020{tuple_delimiter}IS_PART_OF_ARTICLE{tuple_delimiter}Khoản 3 thuộc Điều 12. relation{tuple_delimiter}Điểm c - Khoản 3 - Điều 12 - Luật Đầu tư 2020{tuple_delimiter}Khoản 3 - Điều 12 - Luật Đầu tư 2020{tuple_delimiter}IS_PART_OF_CLAUSE{tuple_delimiter}Điểm c thuộc Khoản 3 của Điều 12. relation{tuple_delimiter}Điều 15 - Luật Đầu tư 2020{tuple_delimiter}Luật Đầu tư 2020{tuple_delimiter}IS_PART_OF_DOCUMENT{tuple_delimiter}Điều 15 thuộc Luật Đầu tư 2020. relation{tuple_delimiter}Khoản 4 - Điều 15 - Luật Đầu tư 2020{tuple_delimiter}Điều 15 - Luật Đầu tư 2020{tuple_delimiter}IS_PART_OF_ARTICLE{tuple_delimiter}Khoản 4 thuộc Điều 15. relation{tuple_delimiter}Chunk 3 - LĐT2020{tuple_delimiter}Điểm c - Khoản 3 - Điều 12 - Luật Đầu tư 2020{tuple_delimiter}DESCRIBES{tuple_delimiter}Chunk 3 mô tả nội dung tại Điểm c Khoản 3 Điều 12. relation{tuple_delimiter}Khoản 4 - Điều 15 - Luật Đầu tư 2020{tuple_delimiter}Luật Đầu tư 2020{tuple_delimiter}REFERENCES{tuple_delimiter}Khoản 4 Điều 15 có viện dẫn đến nghĩa vụ tài chính của nhà đầu tư theo Luật này. {completion_delimiter}
+entity{tuple_delimiter}Nghị định 122/2021/NĐ-CP{tuple_delimiter}LawDocument{tuple_delimiter}Nghị định 122/2021/NĐ-CP quy định về xử phạt vi phạm hành chính trong lĩnh vực kế toán.
+entity{tuple_delimiter}Điều 25 - Nghị định 122/2021/NĐ-CP{tuple_delimiter}Article{tuple_delimiter}Điều 25 quy định về xử phạt vi phạm trong hoạt động kế toán.
+entity{tuple_delimiter}Điều 21 - Nghị định 122/2021/NĐ-CP{tuple_delimiter}Article{tuple_delimiter}Điều 21 được viện dẫn bởi Điều 25.
+relation{tuple_delimiter}Điều 25 - Nghị định 122/2021/NĐ-CP{tuple_delimiter}Nghị định 122/2021/NĐ-CP{tuple_delimiter}IS_PART_OF_DOCUMENT, xử phạt kế toán{tuple_delimiter}Điều 25 quy định về xử phạt vi phạm hoạt động kế toán, thuộc Nghị định 122/2021/NĐ-CP.
+relation{tuple_delimiter}Điều 21 - Nghị định 122/2021/NĐ-CP{tuple_delimiter}Nghị định 122/2021/NĐ-CP{tuple_delimiter}IS_PART_OF_DOCUMENT{tuple_delimiter}Điều 21 thuộc Nghị định 122/2021/NĐ-CP.
+relation{tuple_delimiter}Điều 25 - Nghị định 122/2021/NĐ-CP{tuple_delimiter}Điều 21 - Nghị định 122/2021/NĐ-CP{tuple_delimiter}REFERENCES{tuple_delimiter}Điều 25 về xử phạt vi phạm kế toán có dẫn chiếu đến Điều 21.
+{completion_delimiter}
+
+""",
+    """<Input Text>
+```
+Điều 15 Luật Đầu tư 2020 quy định về nghĩa vụ tài chính của nhà đầu tư. Khoản 4 nêu rõ nhà đầu tư phải thực hiện đầy đủ nghĩa vụ nộp thuế.
+```
+<Output>
+entity{tuple_delimiter}Luật Đầu tư 2020{tuple_delimiter}LawDocument{tuple_delimiter}Luật Đầu tư 2020 quy định về hoạt động đầu tư kinh doanh tại Việt Nam.
+entity{tuple_delimiter}Điều 15 - Luật Đầu tư 2020{tuple_delimiter}Article{tuple_delimiter}Điều 15 quy định về nghĩa vụ tài chính của nhà đầu tư.
+entity{tuple_delimiter}Khoản 4 - Điều 15 - Luật Đầu tư 2020{tuple_delimiter}Clause{tuple_delimiter}Khoản 4 quy định nhà đầu tư phải thực hiện đầy đủ nghĩa vụ nộp thuế.
+relation{tuple_delimiter}Điều 15 - Luật Đầu tư 2020{tuple_delimiter}Luật Đầu tư 2020{tuple_delimiter}IS_PART_OF_DOCUMENT, nghĩa vụ tài chính, nhà đầu tư{tuple_delimiter}Điều 15 quy định về nghĩa vụ tài chính của nhà đầu tư, thuộc Luật Đầu tư 2020.
+relation{tuple_delimiter}Khoản 4 - Điều 15 - Luật Đầu tư 2020{tuple_delimiter}Điều 15 - Luật Đầu tư 2020{tuple_delimiter}IS_PART_OF_ARTICLE, nghĩa vụ nộp thuế{tuple_delimiter}Khoản 4 quy định nghĩa vụ nộp thuế của nhà đầu tư, thuộc Điều 15.
+{completion_delimiter}
 """,
 ]
 
@@ -337,92 +371,156 @@ PROMPTS["fail_response"] = (
 # """
 
 
-
 # PROMPTS["rag_response"] = """---Role---
 
 # You are a Legal AI Assistant specializing in synthesizing information from Vietnamese legal documents.
-# Your primary function is to answer user queries **chính xác 100% theo nội dung pháp luật** bằng cách sử dụng DUY NHẤT dữ liệu trong **Context**.
 
-# Bạn tuyệt đối không được suy đoán, không được diễn giải vượt nội dung văn bản, không được bổ sung kiến thức ngoài bối cảnh.
+# Your primary function is to answer legal queries **CHÍNH XÁC 100% theo nội dung pháp luật** bằng cách sử dụng **DUY NHẤT** dữ liệu có trong **Context**.
+
+# Bạn TUYỆT ĐỐI:
+# - Không suy đoán
+# - Không diễn giải vượt nội dung văn bản
+# - Không bổ sung kiến thức ngoài Context
+# - Không tư vấn pháp lý ngoài phạm vi câu hỏi
+
 
 # ---Goal---
 
-# Tạo ra một câu trả lời tuân thủ pháp luật và dựa hoàn toàn vào:
-# - **Knowledge Graph Data** (LawDocument, Article, Clause, Point…)
-# - **Document Chunks** (trích đoạn điều luật)
-# - **File Attachments / URLs** nếu có
+# Tạo ra một câu trả lời:
+# - Tuân thủ pháp luật
+# - Có thể kiểm tra, đối chiếu
+# - Dựa HOÀN TOÀN vào:
+#   - **Knowledge Graph Data** (LawDocument, Article, Clause, Point…)
+#   - **Document Chunks** (trích đoạn điều luật)
+#   - **File Attachments / URLs** nếu có
+
 
 # ---IRAC Structure Definition---
 
-# 1. **Issue (Vấn đề pháp lý)**  
-#    - Xác định chính xác vấn đề pháp lý người dùng đang hỏi.
-#    - Chỉ nêu lại vấn đề, KHÔNG phân tích.
+# ### 1. Issue (Vấn đề pháp lý)
 
-# 2. **Rule (Quy định pháp luật áp dụng)**  
-#    - Trích dẫn đầy đủ, chính xác các quy định pháp luật liên quan:
-#      * Tên văn bản
-#      * Điều, khoản, điểm
-#      * Nội dung quy định
-#    - **QUAN TRỌNG**:
-#      * Phải kiểm tra TẤT CẢ Document Chunks để phát hiện sửa đổi, bổ sung.
-#      * Nếu một Điều có khoản bổ sung (ví dụ: khoản 5a, khoản 10), phải liệt kê ĐẦY ĐỦ theo thứ tự số.
-#    - KHÔNG tóm tắt làm sai nội dung; chỉ diễn đạt lại cho rõ, không mở rộng.
+# - Xác định chính xác vấn đề pháp lý người dùng đang hỏi.
+# - Chỉ nêu lại vấn đề.
+# - KHÔNG phân tích, KHÔNG suy luận.
 
-# 3. **Application (Áp dụng quy định vào vấn đề)**  
-#    - Chỉ đối chiếu **thông tin có trong câu hỏi của người dùng** với **quy định đã trích dẫn**.
-#    - KHÔNG suy đoán tình tiết.
-#    - KHÔNG đưa ra nhận định vượt quá nội dung luật.
-#    - Nếu dữ kiện trong câu hỏi **không đủ để áp dụng luật**, phải nêu rõ là chưa đủ căn cứ.
 
-# 4. **Conclusion (Kết luận pháp lý)**  
-#    - Kết luận ngắn gọn, rút ra TRỰC TIẾP từ phần Rule và Application.
-#    - Không bổ sung ý kiến cá nhân, không tư vấn ngoài phạm vi câu hỏi.
+# ### 2. Rule (Quy định pháp luật áp dụng)
 
-# ---Instructions---
+# - Trích dẫn ĐẦY ĐỦ, CHÍNH XÁC các quy định pháp luật liên quan, bao gồm:
+#   - Tên văn bản
+#   - Số hiệu
+#   - Năm ban hành
+#   - Điều, khoản, điểm
+#   - Nội dung quy định
+
+# - **BẮT BUỘC**:
+#   - Rà soát TOÀN BỘ Document Chunks trong Context.
+#   - Liệt kê ĐẦY ĐỦ các khoản, điểm hiện hành (bao gồm khoản bổ sung như 5a, 5b… nếu có).
+#   - Giữ NGUYÊN số điều, khoản, điểm; không gộp, không lược bỏ.
+#   - Không tóm tắt làm sai nội dung; chỉ diễn đạt lại cho rõ, KHÔNG mở rộng.
+
+# #### ---Form Templates & Download Links Rules---
+
+# - Nếu trong Context có **link tải mẫu đơn/biểu mẫu** (URL dạng https://...):
+#   - **BẮT BUỘC** trích xuất và hiển thị ĐẦY ĐỦ link download
+#   - Format: `[Liên kết tải mẫu](URL)`
+#   - Liệt kê TẤT CẢ các mẫu đơn liên quan đến câu hỏi
+#   - KHÔNG lược bỏ link, KHÔNG chỉ đề cập mà không kèm URL
+#   - Đặt link trong phần **Quy định** hoặc **Áp dụng**
+# - Nếu có thông tin về **số hiệu mẫu** (Mẫu số 1, Phụ lục I...):
+#   - Ghi rõ tên mẫu và văn bản ban hành
+#   - Kèm link download nếu có trong Context
+
+
+
+# #### ---Amendment Identification Rules---
+
+# - Nếu trong Context có thông tin về **sửa đổi, bổ sung, thay thế**:
+#   - PHẢI nêu rõ **điểm sửa đổi** ngay trong phần Quy định, bao gồm:
+#     - Điều, khoản, điểm bị sửa đổi
+#     - Văn bản thực hiện sửa đổi, bổ sung
+#   - Chỉ nêu nội dung sửa đổi **được thể hiện trực tiếp trong văn bản**.
+#   - KHÔNG:
+#     - So sánh trước – sau
+#     - Diễn giải mức độ thay đổi
+#     - Suy đoán nội dung quy định trước khi sửa đổi
+#   - Nếu Context chỉ cho biết “được sửa đổi bởi …” mà không có nội dung chi tiết → chỉ ghi nhận факт sửa đổi đó.
+
+
+# ### 3. Application (Áp dụng quy định vào vấn đề)
+
+# - Chỉ đối chiếu:
+#   - **Thông tin có trong câu hỏi của người dùng**
+#   - Với **các quy định đã trích dẫn trong phần Rule**
+# - KHÔNG:
+#   - Suy đoán tình tiết
+#   - Giả định sự kiện
+#   - Bổ sung dữ kiện không có trong câu hỏi
+# - Nếu dữ kiện **không đủ để áp dụng luật**, phải nêu rõ:
+#   > “Dữ kiện trong câu hỏi chưa đủ căn cứ để áp dụng quy định này.”
+
+
+# ### 4. Conclusion (Kết luận pháp lý)
+
+# - Kết luận NGẮN GỌN.
+# - Rút ra TRỰC TIẾP từ Rule và Application.
+# - Không bổ sung ý kiến cá nhân.
+# - Không tư vấn ngoài phạm vi câu hỏi.
+
+
+# ---Execution Instructions---
 
 # 1. Xác định **ý định truy vấn pháp lý** của người dùng.
 # 2. Rà soát toàn bộ **Knowledge Graph Data** và **Document Chunks** trong Context.
-# 3. Trích xuất chính xác điều, khoản, điểm, văn bản áp dụng.
-# 4. Kiểm tra đầy đủ các sửa đổi, bổ sung liên quan.
-# 5. Trình bày câu trả lời đúng thứ tự **IRAC**.
-# 6. Nếu không thể trả lời từ Context → trả lời:
+# 3. Trích xuất CHÍNH XÁC điều, khoản, điểm, văn bản áp dụng.
+# 4. Xác định và ghi nhận đầy đủ các **điểm sửa đổi, bổ sung, thay thế** (nếu có).
+# 5. Trình bày câu trả lời theo đúng thứ tự **IRAC**.
+# 6. Nếu không thể trả lời hoàn toàn từ Context → trả lời:
 #    > “Không đủ thông tin trong cơ sở dữ liệu để trả lời câu hỏi này.”
 # 7. Theo dõi `reference_id` của từng Document Chunk được sử dụng.
-# 8. Liên kết reference_id để tạo danh mục **References**.
-# 9. Không viết thêm nội dung nào sau mục References.
+# 8. Liên kết `reference_id` để tạo danh mục **References**.
+# 9. KHÔNG viết thêm bất kỳ nội dung nào sau mục References.
+
 
 # ---Content & Grounding Rules---
 
 # - TUYỆT ĐỐI tuân thủ Context.
 # - KHÔNG diễn giải pháp luật theo quan điểm cá nhân.
 # - KHÔNG suy đoán tình huống pháp lý.
-# - KHÔNG dùng kiến thức ngoài văn bản được cung cấp.
+# - KHÔNG sử dụng kiến thức ngoài văn bản được cung cấp.
+# - Nếu Context có nhiều văn bản sửa đổi liên quan → phải liệt kê đầy đủ, không chọn lọc.
+
 
 # ---Formatting & Language---
 
 # - Trả lời bằng **ngôn ngữ của câu hỏi**.
-# - Sử dụng Markdown.
-# - Bắt buộc có các heading bằng tiếng Việt:
+# - Sử dụng **Markdown**.
+# - BẮT BUỘC có các heading bằng tiếng Việt:
 #   - **Vấn đề**
 #   - **Quy định**
 #   - **Áp dụng**
 #   - **Kết luận**
+# - Khi có sửa đổi/bổ sung → phải thể hiện rõ **điểm sửa đổi** trong phần **Quy định**.
 # - Giữ nguyên số điều, khoản, điểm.
+
 
 # ---References Section---
 
-# ### References
+# ### Tham khảo
+
 # - Mỗi tài liệu 1 dòng
 # - Tối đa 5 tài liệu liên quan nhất
 # - Format:
-#   * `[n] Tên văn bản / Document Title`
-#   * Nếu là file → `- File: filename.pdf`
-#   * Nếu là link → `- URL: https://...`
-# - Không thêm bình luận sau References.
+#   - `[n] Tên văn bản / Document Title`
+#   - Nếu là file → `- File: filename.pdf`
+#   - Nếu là link → `- URL: https://...`
+# - KHÔNG thêm bất kỳ nội dung nào sau mục Tham khảo.
+
 
 # ---User Query---
 
 # {user_prompt}
+
 
 # ---Context---
 
@@ -431,135 +529,101 @@ PROMPTS["fail_response"] = (
 
 PROMPTS["rag_response"] = """---Role---
 
-You are a Legal AI Assistant specializing in synthesizing information from Vietnamese legal documents.
+You are a Legal AI Assistant specializing in Vietnamese law.
 
-Your primary function is to answer legal queries **CHÍNH XÁC 100% theo nội dung pháp luật** bằng cách sử dụng **DUY NHẤT** dữ liệu có trong **Context**.
+Your sole responsibility is to answer legal questions with **ABSOLUTE ACCURACY**, using **ONLY** the information explicitly provided in the **Context**.
 
-Bạn TUYỆT ĐỐI:
-- Không suy đoán
-- Không diễn giải vượt nội dung văn bản
-- Không bổ sung kiến thức ngoài Context
-- Không tư vấn pháp lý ngoài phạm vi câu hỏi
+You MUST:
+- NOT speculate
+- NOT infer beyond the text
+- NOT add external legal knowledge
+- NOT provide legal advice beyond the user's question
 
 
 ---Goal---
 
-Tạo ra một câu trả lời:
-- Tuân thủ pháp luật
-- Có thể kiểm tra, đối chiếu
-- Dựa HOÀN TOÀN vào:
-  - **Knowledge Graph Data** (LawDocument, Article, Clause, Point…)
-  - **Document Chunks** (trích đoạn điều luật)
-  - **File Attachments / URLs** nếu có
+Produce a legal answer that:
+- Is legally precise and verifiable
+- Is based **EXCLUSIVELY** on Document Chunks in the Context
+- Cites ONLY the provisions DIRECTLY relevant to the question (không cite những điều không liên quan)
 
 
----IRAC Structure Definition---
+---Internal Logic (DO NOT OUTPUT THIS)---
 
-### 1. Issue (Vấn đề pháp lý)
+Silently determine the question type:
+- PROCEDURAL: thủ tục, các bước, quy trình, làm sao, làm thế nào → Use STEP-BY-STEP format
+- SUBSTANTIVE: có được không, điều kiện, quyền, nghĩa vụ → Use C-IRAC format
 
-- Xác định chính xác vấn đề pháp lý người dùng đang hỏi.
-- Chỉ nêu lại vấn đề.
-- KHÔNG phân tích, KHÔNG suy luận.
-
-
-### 2. Rule (Quy định pháp luật áp dụng)
-
-- Trích dẫn ĐẦY ĐỦ, CHÍNH XÁC các quy định pháp luật liên quan, bao gồm:
-  - Tên văn bản
-  - Số hiệu
-  - Năm ban hành
-  - Điều, khoản, điểm
-  - Nội dung quy định
-
-- **BẮT BUỘC**:
-  - Rà soát TOÀN BỘ Document Chunks trong Context.
-  - Liệt kê ĐẦY ĐỦ các khoản, điểm hiện hành (bao gồm khoản bổ sung như 5a, 5b… nếu có).
-  - Giữ NGUYÊN số điều, khoản, điểm; không gộp, không lược bỏ.
-  - Không tóm tắt làm sai nội dung; chỉ diễn đạt lại cho rõ, KHÔNG mở rộng.
+Default to STEP-BY-STEP if unclear.
 
 
-#### ---Amendment Identification Rules---
+---Output Structures---
 
-- Nếu trong Context có thông tin về **sửa đổi, bổ sung, thay thế**:
-  - PHẢI nêu rõ **điểm sửa đổi** ngay trong phần Quy định, bao gồm:
-    - Điều, khoản, điểm bị sửa đổi
-    - Văn bản thực hiện sửa đổi, bổ sung
-  - Chỉ nêu nội dung sửa đổi **được thể hiện trực tiếp trong văn bản**.
-  - KHÔNG:
-    - So sánh trước – sau
-    - Diễn giải mức độ thay đổi
-    - Suy đoán nội dung quy định trước khi sửa đổi
-  - Nếu Context chỉ cho biết “được sửa đổi bởi …” mà không có nội dung chi tiết → chỉ ghi nhận факт sửa đổi đó.
+## A. STEP-BY-STEP FORMAT (for procedures)
 
+### **Kết luận**
+- One concise paragraph summarizing the procedure, who performs it, and statutory deadlines
+- Include inline citations: `([reference_id])` or `([reference_id], [reference_id])`
 
-### 3. Application (Áp dụng quy định vào vấn đề)
+### **Hướng dẫn các bước**
+- **Bước 1, Bước 2, Bước 3…**
+- Each step MUST cite the exact legal provision using `([reference_id])`
+- DO NOT include steps not explicitly stated in the Context
 
-- Chỉ đối chiếu:
-  - **Thông tin có trong câu hỏi của người dùng**
-  - Với **các quy định đã trích dẫn trong phần Rule**
-- KHÔNG:
-  - Suy đoán tình tiết
-  - Giả định sự kiện
-  - Bổ sung dữ kiện không có trong câu hỏi
-- Nếu dữ kiện **không đủ để áp dụng luật**, phải nêu rõ:
-  > “Dữ kiện trong câu hỏi chưa đủ căn cứ để áp dụng quy định này.”
+### **Căn cứ pháp lý**
+- List ONLY provisions actually used in the answer (max 5-7 items)
+- Format: `Luật/Nghị định + số hiệu, Điều X ([reference_id])`
+- DO NOT list provisions that were not cited in Kết luận or Hướng dẫn các bước
 
+---
 
-### 4. Conclusion (Kết luận pháp lý)
+## B. C-IRAC FORMAT (for rights, conditions, obligations)
 
-- Kết luận NGẮN GỌN.
-- Rút ra TRỰC TIẾP từ Rule và Application.
-- Không bổ sung ý kiến cá nhân.
-- Không tư vấn ngoài phạm vi câu hỏi.
+### **Kết luận**
+- Direct answer (Có / Không / Phải / Không được)
+- Include inline citations
 
+### **Căn cứ pháp lý**
+- List ONLY directly applicable provisions
 
----Execution Instructions---
-
-1. Xác định **ý định truy vấn pháp lý** của người dùng.
-2. Rà soát toàn bộ **Knowledge Graph Data** và **Document Chunks** trong Context.
-3. Trích xuất CHÍNH XÁC điều, khoản, điểm, văn bản áp dụng.
-4. Xác định và ghi nhận đầy đủ các **điểm sửa đổi, bổ sung, thay thế** (nếu có).
-5. Trình bày câu trả lời theo đúng thứ tự **IRAC**.
-6. Nếu không thể trả lời hoàn toàn từ Context → trả lời:
-   > “Không đủ thông tin trong cơ sở dữ liệu để trả lời câu hỏi này.”
-7. Theo dõi `reference_id` của từng Document Chunk được sử dụng.
-8. Liên kết `reference_id` để tạo danh mục **References**.
-9. KHÔNG viết thêm bất kỳ nội dung nào sau mục References.
+### **Áp dụng**
+- Apply facts from question to the cited rules
+- If facts are insufficient: > "Dữ kiện trong câu hỏi chưa đủ căn cứ để áp dụng quy định này."
 
 
----Content & Grounding Rules---
+---Rule Extraction---
 
-- TUYỆT ĐỐI tuân thủ Context.
-- KHÔNG diễn giải pháp luật theo quan điểm cá nhân.
-- KHÔNG suy đoán tình huống pháp lý.
-- KHÔNG sử dụng kiến thức ngoài văn bản được cung cấp.
-- Nếu Context có nhiều văn bản sửa đổi liên quan → phải liệt kê đầy đủ, không chọn lọc.
+- Extract rules EXACTLY as written in the Context
+- Preserve Article, Clause, Point numbers (including 5a, 5b…)
+- If amendments mentioned, state which article is amended and by which document
 
 
----Formatting & Language---
+---Form Templates & Download Links---
 
-- Trả lời bằng **ngôn ngữ của câu hỏi**.
-- Sử dụng **Markdown**.
-- BẮT BUỘC có các heading bằng tiếng Việt:
-  - **Vấn đề**
-  - **Quy định**
-  - **Áp dụng**
-  - **Kết luận**
-- Khi có sửa đổi/bổ sung → phải thể hiện rõ **điểm sửa đổi** trong phần **Quy định**.
-- Giữ nguyên số điều, khoản, điểm.
+If ANY Document Chunk contains:
+- Form numbers (Mẫu số 1, Mẫu 19, Phụ lục I...)
+- Download URLs (https://...)
+- Links with ".link:" prefix
+
+You MUST include them in the response:
+- Format: `[Tên mẫu đơn](URL)` 
+- Example: `[Mẫu 1 - Giấy đề nghị đăng ký DNTN](https://files.thuvienphapluat.vn/.../Mau_1.doc)`
+- Place links at the end of Kết luận or in a separate ### **Biểu mẫu** section
+- DO NOT omit download links if they exist in Context
 
 
----References Section---
+---CRITICAL RULES---
 
-### References
+1. **DO NOT output "Nhận diện loại câu hỏi" or any internal reasoning**
+2. **ONLY cite provisions that DIRECTLY answer the question**
+   - If question is about "miễn nhiệm Giám đốc", cite Điều 102 (miễn nhiệm GĐ), NOT Điều 47 (góp vốn)
+3. Each `[reference_id]` in the answer MUST match a Document Chunk in Context
+4. **MUST include download links if present in Context** (scan ALL chunks for URLs)
+5. If Context is insufficient: > "Không đủ thông tin trong cơ sở dữ liệu để trả lời câu hỏi này."
+6. Do NOT generate a References section - handled by API
+7. Use the same language as user query (Vietnamese)
+8. Use Markdown formatting
 
-- Mỗi tài liệu 1 dòng
-- Tối đa 5 tài liệu liên quan nhất
-- Format:
-  - `[n] Tên văn bản / Document Title`
-  - Nếu là file → `- File: filename.pdf`
-  - Nếu là link → `- URL: https://...`
-- KHÔNG thêm bất kỳ nội dung nào sau mục References.
 
 
 ---User Query---
@@ -571,7 +635,6 @@ Tạo ra một câu trả lời:
 
 {context_data}
 """
-
 
 
 PROMPTS["naive_rag_response"] = """---Role---
@@ -716,6 +779,11 @@ Rules:
 - Output ONLY the JSON object.
 - All keywords must come strictly from the query.
 
+**CRITICAL RULE for Legal Citations:**
+- When query IS or CONTAINS a specific legal citation like "Điều X Nghị định/Luật Y", keep the FULL citation as ONE keyword.
+- DO NOT split "Điều 9 Nghị định 153/2020/NĐ-CP" into separate parts like "Điều 9" and "Nghị định 153/2020/NĐ-CP"
+- Splitting causes noise by matching unrelated entities.
+
 high_level_keywords:
 - **CRITICAL**: Include the FULL query phrase as-is if it describes a legal procedure/object:
   * "Hồ sơ đăng ký công ty hợp danh" → MUST include "hồ sơ đăng ký công ty hợp danh"
@@ -723,20 +791,21 @@ high_level_keywords:
 - Also include broader intent phrases:
   * "hồ sơ đăng ký", "thủ tục đăng ký", "yêu cầu giấy tờ"...
 - These are used to search for RELATIONSHIPS in a knowledge graph.
+- If query is JUST a legal citation (e.g., "Điều 9 Nghị định 153/2020/NĐ-CP"), leave high_level EMPTY.
 
 low_level_keywords:
-- **CRITICAL**: The FULL query phrase if it describes a specific legal object/procedure:
-  * Same as high_level - include "hồ sơ đăng ký công ty hợp danh" as a whole
-- Specific legal citations IF present (Luật, Nghị định, Điều, Khoản...).
+- **CRITICAL for legal citations**: Keep "Điều X Văn bản Y" as ONE keyword, never split.
+  * "Điều 9 Nghị định 153/2020/NĐ-CP" → ["Điều 9 Nghị định 153/2020/NĐ-CP"] (NOT ["Điều 9", "Nghị định 153/2020/NĐ-CP"])
+- The FULL query phrase if it describes a specific legal object/procedure.
 - Component terms that could be Entity names:
   * "công ty hợp danh", "chi nhánh", "doanh nghiệp tư nhân"
 - These are used to search for ENTITIES in a knowledge graph.
 
 Example thought process:
-Query: "Hồ sơ đăng ký công ty hợp danh"
-- This asks about REGISTRATION DOCUMENTS for a specific company type
-- high_level: ["hồ sơ đăng ký công ty hợp danh", "hồ sơ đăng ký", "thủ tục đăng ký"]
-- low_level: ["hồ sơ đăng ký công ty hợp danh", "công ty hợp danh"]
+Query: "Điều 9 Nghị định 153/2020/NĐ-CP"
+- This IS a specific legal citation, not asking about a procedure
+- high_level: [] (no broader intent)
+- low_level: ["Điều 9 Nghị định 153/2020/NĐ-CP"] (keep as ONE keyword)
 
 If the query contains no meaningful legal content, return empty arrays.
 
@@ -745,16 +814,27 @@ User Query: {query}
 
 PROMPTS["keywords_extraction_examples"] = [
     
-    """Example 1: (Query contains explicit citation)
+    """Example 1: (Query is a DIRECT legal citation - DO NOT SPLIT)
+Query: "Điều 9 Nghị định 153/2020/NĐ-CP"
+Output:
+{{
+  "high_level_keywords": [],
+  "low_level_keywords": ["Điều 9 Nghị định 153/2020/NĐ-CP"]
+}}
+Explanation: When query IS a specific legal citation (Điều X + Văn bản Y), keep it as ONE keyword. Do NOT split into "Điều 9" and "Nghị định 153/2020/NĐ-CP" separately as that causes noise.
+""",
+
+    """Example 2: (Query ABOUT a citation - extract full citation)
 Query: "Theo Điều 7 Nghị định 01/2021/NĐ-CP, hồ sơ gồm những gì?"
 Output:
 {{
   "high_level_keywords": ["thành phần hồ sơ", "quy định pháp lý"],
-  "low_level_keywords": ["Điều 7", "Nghị định 01/2021/NĐ-CP"]
+  "low_level_keywords": ["Điều 7 Nghị định 01/2021/NĐ-CP"]
 }}
+Explanation: Keep "Điều 7 Nghị định 01/2021/NĐ-CP" as ONE keyword. The high_level captures the intent (asking about document components).
 """,
 
-    """Example 2: (Query about a SPECIFIC PROCEDURE - combine terms)
+    """Example 3: (Query about a SPECIFIC PROCEDURE - combine terms)
 Query: "Hồ sơ đăng ký công ty hợp danh"
 Output:
 {{
@@ -771,7 +851,7 @@ Output:
 Explanation: The FULL phrase "hồ sơ đăng ký công ty hợp danh" MUST appear in BOTH high_level and low_level to maximize search coverage.
 """,
 
-    """Example 3: (Query about a Specific Legal Form/Document)
+    """Example 4: (Query about a Specific Legal Form/Document)
 Query: "Nội dung giấy đề nghị đăng ký doanh nghiệp"
 Output:
 {{
@@ -787,7 +867,7 @@ Output:
 }}
 """,
 
-    """Example 4: (Query about a Concept/Definition)
+    """Example 5: (Query about a Concept/Definition)
 Query: "Thế nào là doanh nghiệp nhà nước?"
 Output:
 {{
@@ -802,7 +882,7 @@ Output:
 }}
 """,
 
-    """Example 5: (Query about CONDITIONS/REQUIREMENTS)
+    """Example 6: (Query about CONDITIONS/REQUIREMENTS)
 Query: "Điều kiện làm chủ tịch hội đồng quản trị"
 Output:
 {{
@@ -818,7 +898,7 @@ Output:
 }}
 """,
 
-    """Example 6: (Query about ESTABLISHMENT PROCEDURE)
+    """Example 7: (Query about ESTABLISHMENT PROCEDURE)
 Query: "Thủ tục thành lập chi nhánh công ty"
 Output:
 {{
@@ -835,7 +915,7 @@ Output:
 }}
 """,
 
-    """Example 7: (Query about DOCUMENT REQUIREMENTS for specific company type)
+    """Example 8: (Query about DOCUMENT REQUIREMENTS for specific company type)
 Query: "Hồ sơ thành lập công ty TNHH một thành viên"
 Output:
 {{

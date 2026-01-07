@@ -1762,6 +1762,71 @@ class Neo4JStorage(BaseGraphStorage):
                 )
                 return labels
 
+    async def search_entities_by_description(
+        self, keywords: list[str], limit: int = 20
+    ) -> list[dict]:
+        """
+        Search entities whose description contains any of the given keywords.
+        This is useful for finding entities related to concepts (e.g., "sở hữu chéo")
+        when the entity names are structured differently (e.g., "Điều 195").
+        
+        Args:
+            keywords: List of keywords to search for in entity descriptions
+            limit: Maximum number of results to return
+            
+        Returns:
+            List of entity dictionaries with entity_id and description
+        """
+        workspace_label = self._get_workspace_label()
+        if not keywords:
+            return []
+            
+        try:
+            async with self._driver.session(
+                database=self._DATABASE, default_access_mode="READ"
+            ) as session:
+                # Build OR conditions for each keyword
+                # Using CONTAINS for simple substring matching
+                conditions = []
+                for i, kw in enumerate(keywords):
+                    conditions.append(f"toLower(n.description) CONTAINS $kw{i}")
+                
+                where_clause = " OR ".join(conditions)
+                
+                cypher_query = f"""
+                MATCH (n:`{workspace_label}`)
+                WHERE {where_clause}
+                WITH n.entity_id AS entity_id, n.description AS description
+                RETURN entity_id, description
+                LIMIT $limit
+                """
+                
+                # Build params dict
+                params = {"limit": limit}
+                for i, kw in enumerate(keywords):
+                    params[f"kw{i}"] = kw.lower()
+                
+                result = await session.run(cypher_query, **params)
+                
+                entities = []
+                async for record in result:
+                    entities.append({
+                        "entity_id": record["entity_id"],
+                        "description": record["description"]
+                    })
+                
+                await result.consume()
+                logger.debug(
+                    f"[{self.workspace}] Description search for {keywords} returned {len(entities)} results"
+                )
+                return entities
+                
+        except Exception as e:
+            logger.warning(
+                f"[{self.workspace}] Error searching entities by description: {e}"
+            )
+            return []
+
     async def drop(self) -> dict[str, str]:
         """Drop all data from current workspace storage and clean up resources
 

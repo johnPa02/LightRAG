@@ -610,6 +610,7 @@ You MUST include them in the response:
 - Example: `[Mẫu 1 - Giấy đề nghị đăng ký DNTN](https://files.thuvienphapluat.vn/.../Mau_1.doc)`
 - Place links at the end of Kết luận or in a separate ### **Biểu mẫu** section
 - DO NOT omit download links if they exist in Context
+- **CRITICAL**: COPY URLs EXACTLY as they appear in Context chunks. DO NOT modify, shorten, or generate similar URLs. URLs may contain encoded characters like %E1%BA%AB - keep them as-is.
 
 
 ---CRITICAL RULES---
@@ -619,10 +620,11 @@ You MUST include them in the response:
    - If question is about "miễn nhiệm Giám đốc", cite Điều 102 (miễn nhiệm GĐ), NOT Điều 47 (góp vốn)
 3. Each `[reference_id]` in the answer MUST match a Document Chunk in Context
 4. **MUST include download links if present in Context** (scan ALL chunks for URLs)
-5. If Context is insufficient: > "Không đủ thông tin trong cơ sở dữ liệu để trả lời câu hỏi này."
-6. Do NOT generate a References section - handled by API
-7. Use the same language as user query (Vietnamese)
-8. Use Markdown formatting
+5. **For form templates (biểu mẫu)**: Prefer forms from NEWER documents. Priority: Thông tư 68/2025/TT-BTC > Nghị định 168/2025 > Nghị định 89/2024 > Nghị định 01/2021
+6. If Context is insufficient: > "Không đủ thông tin trong cơ sở dữ liệu để trả lời câu hỏi này."
+7. Do NOT generate a References section - handled by API
+8. Use the same language as user query (Vietnamese)
+9. Use Markdown formatting
 
 
 
@@ -784,12 +786,29 @@ Rules:
 - DO NOT split "Điều 9 Nghị định 153/2020/NĐ-CP" into separate parts like "Điều 9" and "Nghị định 153/2020/NĐ-CP"
 - Splitting causes noise by matching unrelated entities.
 
+**CRITICAL RULE for Legal Procedure Queries (Keyword Expansion):**
+When query asks about procedures for SPECIFIC company types, you MUST:
+1. Include the specific query terms (e.g., "thủ tục đăng ký công ty TNHH một thành viên")
+2. ALSO include the legal article: "Điều 26 - Luật Doanh nghiệp 2020: quy định trình tự thủ tục đăng ký doanh nghiệp"
+3. ALSO include form-related terms using pattern: "Giấy đề nghị đăng ký doanh nghiệp dành cho công ty [loại công ty]"
+
+Examples:
+- Query "thủ tục đăng ký công ty TNHH 1 thành viên" →
+  high_level: ["thủ tục đăng ký công ty TNHH một thành viên", "Điều 26 - Luật Doanh nghiệp 2020: quy định trình tự thủ tục đăng ký doanh nghiệp"]
+  low_level: ["thủ tục đăng ký công ty TNHH một thành viên", "Điều 26 - Luật Doanh nghiệp 2020: quy định trình tự thủ tục đăng ký doanh nghiệp", "Giấy đề nghị đăng ký doanh nghiệp dành cho công ty trách nhiệm hữu hạn một thành viên"]
+
+- Query "thủ tục đăng ký công ty TNHH 2 thành viên" →
+  high_level: ["thủ tục đăng ký công ty TNHH hai thành viên", "Điều 26 - Luật Doanh nghiệp 2020: quy định trình tự thủ tục đăng ký doanh nghiệp"]
+  low_level: ["thủ tục đăng ký công ty TNHH hai thành viên", "Điều 26 - Luật Doanh nghiệp 2020: quy định trình tự thủ tục đăng ký doanh nghiệp", "Giấy đề nghị đăng ký doanh nghiệp dành cho công ty trách nhiệm hữu hạn hai thành viên trở lên"]
+
+
 high_level_keywords:
 - **CRITICAL**: Include the FULL query phrase as-is if it describes a legal procedure/object:
   * "Hồ sơ đăng ký công ty hợp danh" → MUST include "hồ sơ đăng ký công ty hợp danh"
   * "Thủ tục thành lập chi nhánh" → MUST include "thủ tục thành lập chi nhánh"
 - Also include broader intent phrases:
   * "hồ sơ đăng ký", "thủ tục đăng ký", "yêu cầu giấy tờ"...
+- **For company registration queries**: ALWAYS include "đăng ký doanh nghiệp" and "biểu mẫu đăng ký doanh nghiệp"
 - These are used to search for RELATIONSHIPS in a knowledge graph.
 - If query is JUST a legal citation (e.g., "Điều 9 Nghị định 153/2020/NĐ-CP"), leave high_level EMPTY.
 
@@ -799,6 +818,7 @@ low_level_keywords:
 - The FULL query phrase if it describes a specific legal object/procedure.
 - Component terms that could be Entity names:
   * "công ty hợp danh", "chi nhánh", "doanh nghiệp tư nhân"
+- **For registration queries**: Include specific form keyword like "biểu mẫu đăng ký [loại công ty]"
 - These are used to search for ENTITIES in a knowledge graph.
 
 Example thought process:
@@ -811,6 +831,7 @@ If the query contains no meaningful legal content, return empty arrays.
 
 User Query: {query}
 """
+
 
 PROMPTS["keywords_extraction_examples"] = [
     

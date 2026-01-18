@@ -51,6 +51,7 @@ from lightrag.base import (
     QueryContextResult,
 )
 from lightrag.prompt import PROMPTS
+from lightrag.domains.base import DomainConfig, get_prompt
 from lightrag.constants import (
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_ENTITY_TOKENS,
@@ -3023,6 +3024,7 @@ async def kg_query(
     system_prompt: str | None = None,
     chunks_vdb: BaseVectorStorage = None,
     entity_chunks_db: BaseKVStorage = None,
+    domain: DomainConfig | None = None,
 ) -> QueryResult | None:
     """
     Execute knowledge graph query and return unified QueryResult object.
@@ -3098,6 +3100,7 @@ async def kg_query(
         query_param,
         chunks_vdb,
         entity_chunks_db,
+        domain,
     )
 
     if context_result is None:
@@ -3118,7 +3121,8 @@ async def kg_query(
     )
 
     # Build system prompt
-    sys_prompt_temp = system_prompt if system_prompt else PROMPTS["rag_response"]
+    sys_prompt_temp = system_prompt if system_prompt else get_prompt("rag_response", domain)
+    logger.info(f"[DEBUG] Domain: {domain.name if domain else 'None'}, Using custom prompt: {domain.rag_response is not None if domain else False}")
     sys_prompt = sys_prompt_temp.format(
         response_type=response_type,
         user_prompt=user_prompt,
@@ -5096,12 +5100,14 @@ async def _build_context_str(
     chunk_tracking: dict = None,
     entity_id_to_original: dict = None,
     relation_id_to_original: dict = None,
+    domain: DomainConfig | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """
     Build the final LLM context string with token processing.
     This includes dynamic token calculation and final chunk truncation.
     """
     tokenizer = global_config.get("tokenizer")
+    logger.info(f"[DEBUG-CONTEXT] domain={domain.name if domain else 'None'}, has_rag_response={domain.rag_response is not None if domain else False}")
     if not tokenizer:
         logger.error("Missing tokenizer, cannot build LLM context")
         # Return empty raw data structure when no tokenizer
@@ -5123,9 +5129,9 @@ async def _build_context_str(
         global_config.get("max_total_tokens", DEFAULT_MAX_TOTAL_TOKENS),
     )
 
-    # Get the system prompt template from PROMPTS or global_config
+    # Get the system prompt template from domain config or global_config or PROMPTS
     sys_prompt_template = global_config.get(
-        "system_prompt_template", PROMPTS["rag_response"]
+        "system_prompt_template", get_prompt("rag_response", domain)
     )
 
     kg_context_template = PROMPTS["kg_query_context"]
@@ -5358,6 +5364,7 @@ async def _build_query_context(
     query_param: QueryParam,
     chunks_vdb: BaseVectorStorage = None,
     entity_chunks_db: BaseKVStorage = None,
+    domain: DomainConfig | None = None,
 ) -> QueryContextResult | None:
     """
     Main query context building function using the new 4-stage architecture:
@@ -5442,6 +5449,7 @@ async def _build_query_context(
         chunk_tracking=search_result["chunk_tracking"],
         entity_id_to_original=truncation_result["entity_id_to_original"],
         relation_id_to_original=truncation_result["relation_id_to_original"],
+        domain=domain,
     )
     logger.info(f"[PERF] Stage 4 (Build Context): {_time.time() - _stage4_start:.2f}s")
     logger.info(f"[PERF] Total _build_query_context: {_time.time() - _total_start:.2f}s")

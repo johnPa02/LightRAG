@@ -8,9 +8,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from lightrag.base import QueryParam
 from lightrag.api.utils_api import get_combined_auth_dependency
 from lightrag.utils import logger
+from lightrag.domains.base import DomainConfig
 from pydantic import BaseModel, Field, field_validator
 
-router = APIRouter(tags=["query"])
+# Note: router is created inside create_query_routes() to allow multiple domain instances
 
 
 class QueryRequest(BaseModel):
@@ -190,7 +191,9 @@ class StreamChunkResponse(BaseModel):
     )
 
 
-def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
+def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60, domain: Optional[DomainConfig] = None):
+    # Create a new router for each domain to avoid route conflicts
+    router = APIRouter(tags=["query"])
     combined_auth = get_combined_auth_dependency(api_key)
 
     @router.post(
@@ -409,7 +412,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             param.stream = False
 
             # Unified approach: always use aquery_llm for both cases
-            result = await rag.aquery_llm(request.query, param=param)
+            result = await rag.aquery_llm(request.query, param=param, domain=domain)
 
             # Extract LLM response and references from unified result
             llm_response = result.get("llm_response", {})
@@ -667,7 +670,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             from fastapi.responses import StreamingResponse
 
             # Unified approach: always use aquery_llm for all cases
-            result = await rag.aquery_llm(request.query, param=param)
+            result = await rag.aquery_llm(request.query, param=param, domain=domain)
 
             async def stream_generator():
                 # Extract references and LLM response from unified result

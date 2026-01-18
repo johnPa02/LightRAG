@@ -386,7 +386,8 @@ export const getDocumentsScanProgress = async (): Promise<LightragDocumentsScanP
 }
 
 export const queryText = async (request: QueryRequest): Promise<QueryResponse> => {
-  const response = await axiosInstance.post('/query', request)
+  const domain = useSettingsStore.getState().domain;
+  const response = await axiosInstance.post(`/api/${domain}/query`, request)
   return response.data
 }
 
@@ -395,6 +396,7 @@ export const queryTextStream = async (
   onChunk: (chunk: string) => void,
   onError?: (error: string) => void
 ) => {
+  const domain = useSettingsStore.getState().domain;
   const apiKey = useSettingsStore.getState().apiKey;
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
   const headers: HeadersInit = {
@@ -409,7 +411,7 @@ export const queryTextStream = async (
   }
 
   try {
-    const response = await fetch(`${backendBaseUrl}/query/stream`, {
+    const response = await fetch(`${backendBaseUrl}/api/${domain}/query/stream`, {
       method: 'POST',
       headers: headers,
       body: JSON.stringify(request),
@@ -433,7 +435,7 @@ export const queryTextStream = async (
       } catch { /* ignore */ }
 
       // Format error message similar to axios interceptor for consistency
-      const url = `${backendBaseUrl}/query/stream`;
+      const url = `${backendBaseUrl}/api/${domain}/query/stream`;
       throw new Error(
         `${response.status} ${response.statusText}\n${JSON.stringify(
           { error: errorBody }
@@ -516,27 +518,27 @@ export const queryTextStream = async (
       let userMessage = message;
 
       switch (statusCode) {
-      case 403:
-        userMessage = 'You do not have permission to access this resource (403 Forbidden)';
-        console.error('Permission denied for stream request:', message);
-        break;
-      case 404:
-        userMessage = 'The requested resource does not exist (404 Not Found)';
-        console.error('Resource not found for stream request:', message);
-        break;
-      case 429:
-        userMessage = 'Too many requests, please try again later (429 Too Many Requests)';
-        console.error('Rate limited for stream request:', message);
-        break;
-      case 500:
-      case 502:
-      case 503:
-      case 504:
-        userMessage = `Server error, please try again later (${statusCode})`;
-        console.error('Server error for stream request:', message);
-        break;
-      default:
-        console.error('Stream request failed with status code:', statusCode, message);
+        case 403:
+          userMessage = 'You do not have permission to access this resource (403 Forbidden)';
+          console.error('Permission denied for stream request:', message);
+          break;
+        case 404:
+          userMessage = 'The requested resource does not exist (404 Not Found)';
+          console.error('Resource not found for stream request:', message);
+          break;
+        case 429:
+          userMessage = 'Too many requests, please try again later (429 Too Many Requests)';
+          console.error('Rate limited for stream request:', message);
+          break;
+        case 500:
+        case 502:
+        case 503:
+        case 504:
+          userMessage = `Server error, please try again later (${statusCode})`;
+          console.error('Server error for stream request:', message);
+          break;
+        default:
+          console.error('Stream request failed with status code:', statusCode, message);
       }
 
       if (onError) {
@@ -547,8 +549,8 @@ export const queryTextStream = async (
 
     // Handle network errors (like connection refused, timeout, etc.)
     if (message.includes('NetworkError') ||
-        message.includes('Failed to fetch') ||
-        message.includes('Network request failed')) {
+      message.includes('Failed to fetch') ||
+      message.includes('Network request failed')) {
       console.error('Network error for stream request:', message);
       if (onError) {
         onError('Network connection error, please check your internet connection');
@@ -667,9 +669,9 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
 
     // Strict validation of the response data
     if (response.data &&
-        typeof response.data === 'object' &&
-        'auth_configured' in response.data &&
-        typeof response.data.auth_configured === 'boolean') {
+      typeof response.data === 'object' &&
+      'auth_configured' in response.data &&
+      typeof response.data.auth_configured === 'boolean') {
 
       // For unconfigured auth, ensure we have an access token
       if (!response.data.auth_configured) {

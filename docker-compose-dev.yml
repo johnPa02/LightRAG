@@ -1,0 +1,33 @@
+# DEV Environment - Runs on port 9622
+# Shares Neo4j and Qdrant with production
+# Usage: docker compose -f docker-compose-dev.yml up -d
+
+services:
+  lightrag-dev:
+    container_name: lightrag-dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "9622:9622"
+    volumes:
+      - ./data/rag_storage:/app/data/rag_storage
+      - ./data/inputs:/app/data/inputs
+      - ./config.ini:/app/config.ini
+      - ./.env.dev:/app/.env
+      # Mount source code for live development
+      - ./lightrag:/app/lightrag
+    env_file:
+      - .env.dev
+    environment:
+      - PORT=9622
+    # Connect to existing neo4j and qdrant from main docker-compose
+    networks:
+      - lightrag_default
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+networks:
+  lightrag_default:
+    external: true

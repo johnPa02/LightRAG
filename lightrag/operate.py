@@ -3317,7 +3317,11 @@ async def extract_keywords_only(
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 
-    result = await use_model_func(kw_prompt, keyword_extraction=True)
+    result = await use_model_func(
+        kw_prompt,
+        keyword_extraction=True,
+        history_messages=param.conversation_history,
+    )
 
     # 5. Parse out JSON from the LLM response
     logger.info(f"[DEBUG] Raw LLM result for keywords: {repr(result)}")

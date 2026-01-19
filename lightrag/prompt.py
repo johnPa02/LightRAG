@@ -829,6 +829,18 @@ Query: "Điều 9 Nghị định 153/2020/NĐ-CP"
 
 If the query contains no meaningful legal content, return empty arrays.
 
+**CRITICAL: Conversation Context Resolution**
+If conversation history is provided in the message context:
+- Analyze previous messages to understand the FULL context of the current query
+- Resolve pronouns and references (e.g., "nó", "điều đó", "văn bản này", "luật này") using previous context
+- If current query mentions "Điều 27" without specifying which law, check previous messages for the law name
+- Include keywords from both current query AND relevant context from previous messages
+
+Example with conversation history:
+- Previous: User asked about "Điều 26 Luật Doanh nghiệp 2020"
+- Current: User asks "Còn Điều 27 thì sao?"
+- Keywords should include: ["Điều 27 Luật Doanh nghiệp 2020"] (resolved from context, NOT just "Điều 27")
+
 User Query: {query}
 """
 

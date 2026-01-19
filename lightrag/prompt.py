@@ -867,6 +867,7 @@ User Query: {query}
 """
 
 
+
 PROMPTS["keywords_extraction_examples"] = [
     
     """Example 1: (Query is a DIRECT legal citation - DO NOT SPLIT)

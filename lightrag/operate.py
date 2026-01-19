@@ -3067,7 +3067,7 @@ async def kg_query(
         use_model_func = partial(use_model_func, _priority=5)
 
     hl_keywords, ll_keywords = await get_keywords_from_query(
-        query, query_param, global_config, hashing_kv
+        query, query_param, global_config, hashing_kv, domain
     )
 
     logger.debug(f"High-level keywords: {hl_keywords}")
@@ -3232,6 +3232,7 @@ async def get_keywords_from_query(
     query_param: QueryParam,
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
+    domain: DomainConfig | None = None,
 ) -> tuple[list[str], list[str]]:
     """
     Retrieves high-level and low-level keywords for RAG operations.
@@ -3244,6 +3245,7 @@ async def get_keywords_from_query(
         query_param: Query parameters that may contain pre-defined keywords
         global_config: Global configuration dictionary
         hashing_kv: Optional key-value storage for caching results
+        domain: Optional domain configuration for prompt overrides
 
     Returns:
         A tuple containing (high_level_keywords, low_level_keywords)
@@ -3254,7 +3256,7 @@ async def get_keywords_from_query(
 
     # Extract keywords using extract_keywords_only function which already supports conversation history
     hl_keywords, ll_keywords = await extract_keywords_only(
-        query, query_param, global_config, hashing_kv
+        query, query_param, global_config, hashing_kv, domain
     )
     return hl_keywords, ll_keywords
 
@@ -3264,11 +3266,19 @@ async def extract_keywords_only(
     param: QueryParam,
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
+    domain: DomainConfig | None = None,
 ) -> tuple[list[str], list[str]]:
     """
     Extract high-level and low-level keywords from the given 'text' using the LLM.
     This method does NOT build the final RAG context or provide a final answer.
     It ONLY extracts keywords (hl_keywords, ll_keywords).
+    
+    Args:
+        text: The query text to extract keywords from
+        param: Query parameters
+        global_config: Global configuration dictionary
+        hashing_kv: Optional key-value storage for caching results
+        domain: Optional domain configuration for prompt overrides
     """
 
     # 1. Handle cache if needed - add cache type for keywords
@@ -3296,8 +3306,9 @@ async def extract_keywords_only(
 
     language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
 
-    # 3. Build the keyword-extraction prompt
-    kw_prompt = PROMPTS["keywords_extraction"].format(
+    # 3. Build the keyword-extraction prompt (use domain-specific prompt if available)
+    keywords_prompt_template = get_prompt("keywords_extraction", domain)
+    kw_prompt = keywords_prompt_template.format(
         query=text,
         examples=examples,
         language=language,

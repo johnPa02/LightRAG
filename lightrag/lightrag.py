@@ -25,6 +25,7 @@ from typing import (
     Union,
 )
 from lightrag.prompt import PROMPTS
+from lightrag.domains.base import DomainConfig
 from lightrag.exceptions import PipelineCancelledException
 from lightrag.constants import (
     DEFAULT_MAX_GLEANING,
@@ -2678,6 +2679,7 @@ class LightRAG:
         query: str,
         param: QueryParam = QueryParam(),
         system_prompt: str | None = None,
+        domain: DomainConfig | None = None,
     ) -> dict[str, Any]:
         """
         Asynchronous complete query API: returns structured retrieval results with LLM generation.
@@ -2713,6 +2715,7 @@ class LightRAG:
                     system_prompt=system_prompt,
                     chunks_vdb=self.chunks_vdb,
                     entity_chunks_db=self.entity_chunks,
+                    domain=domain,
                 )
             elif param.mode == "naive":
                 query_result = await naive_query(

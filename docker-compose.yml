@@ -52,6 +52,8 @@ services:
       - ./data/inputs:/app/data/inputs
       - ./config.ini:/app/config.ini
       - ./.env:/app/.env
+      # Note: Cannot mount ./lightrag because webui is built inside image
+      # To modify code, rebuild image: docker compose build lightrag
     env_file:
       - .env
     depends_on:

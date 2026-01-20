@@ -7,6 +7,7 @@ import { Message, QueryRequest } from '@/api/lightrag'
 type Theme = 'dark' | 'light' | 'system'
 type Language = 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW'
 type Tab = 'documents' | 'knowledge-graph' | 'retrieval' | 'api'
+type Domain = 'business' | 'healthcare'
 
 interface SettingsState {
   // Document manager settings
@@ -82,6 +83,10 @@ interface SettingsState {
   // Search label dropdown refresh trigger (non-persistent, runtime only)
   searchLabelDropdownRefreshTrigger: number
   triggerSearchLabelDropdownRefresh: () => void
+
+  // Domain settings (for multi-domain RAG)
+  domain: Domain
+  setDomain: (domain: Domain) => void
 }
 
 const useSettingsStoreBase = create<SettingsState>()(
@@ -89,6 +94,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     (set) => ({
       theme: 'system',
       language: 'en',
+      domain: 'business',
       showPropertyPanel: true,
       showNodeSearchBar: true,
       showLegend: false,
@@ -233,12 +239,15 @@ const useSettingsStoreBase = create<SettingsState>()(
       triggerSearchLabelDropdownRefresh: () =>
         set((state) => ({
           searchLabelDropdownRefreshTrigger: state.searchLabelDropdownRefreshTrigger + 1
-        }))
+        })),
+
+      // Domain setter
+      setDomain: (domain: Domain) => set({ domain })
     }),
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 19,
+      version: 20,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -341,6 +350,10 @@ const useSettingsStoreBase = create<SettingsState>()(
             delete state.querySettings.response_type
           }
         }
+        if (version < 20) {
+          // Add domain field for multi-domain support
+          state.domain = 'business'
+        }
         return state
       }
     }
@@ -349,4 +362,4 @@ const useSettingsStoreBase = create<SettingsState>()(
 
 const useSettingsStore = createSelectors(useSettingsStoreBase)
 
-export { useSettingsStore, type Theme }
+export { useSettingsStore, type Theme, type Domain }

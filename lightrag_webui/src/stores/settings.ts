@@ -244,7 +244,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 20,
+      version: 21,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -350,6 +350,12 @@ const useSettingsStoreBase = create<SettingsState>()(
         if (version < 20) {
           // Add domain field for multi-domain support
           state.domain = 'business'
+        }
+        if (version < 21) {
+          // Enable conversation history by default (was previously forced to 0)
+          if (state.querySettings) {
+            state.querySettings.history_turns = 3
+          }
         }
         return state
       }

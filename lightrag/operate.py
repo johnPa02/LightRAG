@@ -3320,6 +3320,14 @@ async def extract_keywords_only(
         f"[extract_keywords] Sending to LLM: {len_of_prompts:,} tokens (Prompt: {len_of_prompts})"
     )
 
+    # DEBUG: Log conversation history
+    if param.conversation_history:
+        logger.info(f"[DEBUG] Conversation history has {len(param.conversation_history)} messages")
+        for i, msg in enumerate(param.conversation_history[-4:]):  # Show last 4 messages
+            logger.info(f"[DEBUG] History[{i}]: role={msg.get('role')}, content={msg.get('content', '')[:100]}...")
+    else:
+        logger.info("[DEBUG] Conversation history is EMPTY")
+
     # 4. Call the LLM for keyword extraction
     if param.model_func:
         use_model_func = param.model_func

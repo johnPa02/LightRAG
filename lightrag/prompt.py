@@ -801,16 +801,38 @@ Examples:
   high_level: ["thủ tục đăng ký công ty TNHH hai thành viên", "Điều 26 - Luật Doanh nghiệp 2020: quy định trình tự thủ tục đăng ký doanh nghiệp"]
   low_level: ["thủ tục đăng ký công ty TNHH hai thành viên", "Điều 26 - Luật Doanh nghiệp 2020: quy định trình tự thủ tục đăng ký doanh nghiệp", "Giấy đề nghị đăng ký doanh nghiệp dành cho công ty trách nhiệm hữu hạn hai thành viên trở lên"]
 
+**CRITICAL RULE for Multi-Concept Queries (Combined Keywords):**
+When query contains MULTIPLE concepts/conditions, you MUST:
+1. Include COMBINED keywords that link ALL concepts together
+2. NEVER leave high_level_keywords empty for multi-concept queries
+3. Include both individual terms AND combined phrases
+
+Examples of Multi-Concept Queries:
+- Query "tử vong có được thanh toán IVIG không?" →
+  high_level: ["thanh toán IVIG khi tử vong", "điều kiện thanh toán IVIG", "IVIG trong trường hợp tử vong"]
+  low_level: ["tử vong", "thanh toán IVIG", "IVIG", "điều kiện thanh toán"]
+
+- Query "công ty TNHH có được góp vốn bằng bất động sản không?" →
+  high_level: ["góp vốn bằng bất động sản công ty TNHH", "điều kiện góp vốn bằng tài sản", "góp vốn bất động sản"]
+  low_level: ["công ty TNHH", "góp vốn", "bất động sản", "góp vốn bằng bất động sản"]
+
+- Query "người nước ngoài có được thành lập doanh nghiệp tư nhân không?" →
+  high_level: ["người nước ngoài thành lập doanh nghiệp tư nhân", "điều kiện thành lập doanh nghiệp tư nhân cho người nước ngoài"]
+  low_level: ["người nước ngoài", "doanh nghiệp tư nhân", "thành lập doanh nghiệp"]
+
 
 high_level_keywords:
 - **CRITICAL**: Include the FULL query phrase as-is if it describes a legal procedure/object:
   * "Hồ sơ đăng ký công ty hợp danh" → MUST include "hồ sơ đăng ký công ty hợp danh"
   * "Thủ tục thành lập chi nhánh" → MUST include "thủ tục thành lập chi nhánh"
+- **CRITICAL for Multi-Concept**: When query has MULTIPLE concepts (A + B), MUST include COMBINED phrase:
+  * "tử vong + thanh toán IVIG" → MUST include "thanh toán IVIG khi tử vong" or "điều kiện thanh toán IVIG"
+  * NEVER leave high_level empty for multi-concept queries!
 - Also include broader intent phrases:
-  * "hồ sơ đăng ký", "thủ tục đăng ký", "yêu cầu giấy tờ"...
+  * "hồ sơ đăng ký", "thủ tục đăng ký", "yêu cầu giấy tờ", "điều kiện"...
 - **For company registration queries**: ALWAYS include "đăng ký doanh nghiệp" and "biểu mẫu đăng ký doanh nghiệp"
 - These are used to search for RELATIONSHIPS in a knowledge graph.
-- If query is JUST a legal citation (e.g., "Điều 9 Nghị định 153/2020/NĐ-CP"), leave high_level EMPTY.
+- ONLY leave high_level EMPTY if query is JUST a single legal citation (e.g., "Điều 9 Nghị định 153/2020/NĐ-CP").
 
 low_level_keywords:
 - **CRITICAL for legal citations**: Keep "Điều X Văn bản Y" as ONE keyword, never split.
@@ -829,8 +851,21 @@ Query: "Điều 9 Nghị định 153/2020/NĐ-CP"
 
 If the query contains no meaningful legal content, return empty arrays.
 
+**CRITICAL: Conversation Context Resolution**
+If conversation history is provided in the message context:
+- Analyze previous messages to understand the FULL context of the current query
+- Resolve pronouns and references (e.g., "nó", "điều đó", "văn bản này", "luật này") using previous context
+- If current query mentions "Điều 27" without specifying which law, check previous messages for the law name
+- Include keywords from both current query AND relevant context from previous messages
+
+Example with conversation history:
+- Previous: User asked about "Điều 26 Luật Doanh nghiệp 2020"
+- Current: User asks "Còn Điều 27 thì sao?"
+- Keywords should include: ["Điều 27 Luật Doanh nghiệp 2020"] (resolved from context, NOT just "Điều 27")
+
 User Query: {query}
 """
+
 
 
 PROMPTS["keywords_extraction_examples"] = [

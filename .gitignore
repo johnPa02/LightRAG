@@ -13,6 +13,9 @@ venv/
 
 # Enviroment Variable Files
 .env
+.env.*
+.env.backup
+.env.dev.tmp
 
 # Build / Distribution
 dist/

@@ -51,6 +51,7 @@ from lightrag.base import (
     QueryContextResult,
 )
 from lightrag.prompt import PROMPTS
+from lightrag.domains.base import DomainConfig, get_prompt
 from lightrag.constants import (
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_ENTITY_TOKENS,
@@ -3023,6 +3024,7 @@ async def kg_query(
     system_prompt: str | None = None,
     chunks_vdb: BaseVectorStorage = None,
     entity_chunks_db: BaseKVStorage = None,
+    domain: DomainConfig | None = None,
 ) -> QueryResult | None:
     """
     Execute knowledge graph query and return unified QueryResult object.
@@ -3098,6 +3100,7 @@ async def kg_query(
         query_param,
         chunks_vdb,
         entity_chunks_db,
+        domain,
     )
 
     if context_result is None:
@@ -3118,7 +3121,8 @@ async def kg_query(
     )
 
     # Build system prompt
-    sys_prompt_temp = system_prompt if system_prompt else PROMPTS["rag_response"]
+    sys_prompt_temp = system_prompt if system_prompt else get_prompt("rag_response", domain)
+    logger.info(f"[DEBUG] Domain: {domain.name if domain else 'None'}, Using custom prompt: {domain.rag_response is not None if domain else False}")
     sys_prompt = sys_prompt_temp.format(
         response_type=response_type,
         user_prompt=user_prompt,
@@ -3548,24 +3552,54 @@ async def _perform_kg_search(
 
     # Round-robin merge entities
     final_entities = []
-    seen_entities = set()
+    seen_entities = {}  # entity_name -> rank (to compare and keep higher-ranked version)
     max_len = max(len(local_entities), len(global_entities))
+    
+    # Debug: Check Điều 26 in local vs global before merge
+    local_dieu26 = [(i, e.get("entity_name"), e.get("rank", 0), e.get("is_direct_link", False)) for i, e in enumerate(local_entities) if "điều 26 - luật doanh nghiệp 2020" in e.get("entity_name", "").lower()]
+    global_dieu26 = [(i, e.get("entity_name"), e.get("rank", 0), e.get("is_direct_link", False)) for i, e in enumerate(global_entities) if "điều 26 - luật doanh nghiệp 2020" in e.get("entity_name", "").lower()]
+    if local_dieu26 or global_dieu26:
+        logger.info(f"DEBUG: Điều 26 before merge - LOCAL: {local_dieu26}, GLOBAL: {global_dieu26}")
+    
     for i in range(max_len):
         # First from local
         if i < len(local_entities):
             entity = local_entities[i]
             entity_name = entity.get("entity_name")
-            if entity_name and entity_name not in seen_entities:
-                final_entities.append(entity)
-                seen_entities.add(entity_name)
+            if entity_name:
+                existing_rank = seen_entities.get(entity_name, -1)
+                current_rank = entity.get("rank", 0)
+                # Keep entity with higher rank (or add if not seen)
+                if existing_rank < 0:
+                    final_entities.append(entity)
+                    seen_entities[entity_name] = current_rank
+                elif current_rank > existing_rank:
+                    # Replace with higher-ranked version
+                    for idx, e in enumerate(final_entities):
+                        if e.get("entity_name") == entity_name:
+                            final_entities[idx] = entity
+                            seen_entities[entity_name] = current_rank
+                            break
 
         # Then from global
         if i < len(global_entities):
             entity = global_entities[i]
             entity_name = entity.get("entity_name")
-            if entity_name and entity_name not in seen_entities:
-                final_entities.append(entity)
-                seen_entities.add(entity_name)
+            if entity_name:
+                existing_rank = seen_entities.get(entity_name, -1)
+                current_rank = entity.get("rank", 0)
+                # Keep entity with higher rank (or add if not seen)
+                if existing_rank < 0:
+                    final_entities.append(entity)
+                    seen_entities[entity_name] = current_rank
+                elif current_rank > existing_rank:
+                    # Replace with higher-ranked version
+                    for idx, e in enumerate(final_entities):
+                        if e.get("entity_name") == entity_name:
+                            final_entities[idx] = entity
+                            seen_entities[entity_name] = current_rank
+                            break
+
 
     # Round-robin merge relations
     final_relations = []
@@ -3653,6 +3687,13 @@ async def _apply_token_truncation(
     final_entities = search_result["final_entities"]
     final_relations = search_result["final_relations"]
 
+    # Debug: Check for duplicate Điều 26 entities
+    dieu26_all = [(i, e.get("entity_name"), e.get("rank", 0), e.get("is_direct_link", False)) for i, e in enumerate(final_entities) if "điều 26" in e.get("entity_name", "").lower() and "luật doanh nghiệp" in e.get("entity_name", "").lower()]
+    if len(dieu26_all) > 1:
+        logger.info(f"DEBUG: Found {len(dieu26_all)} Điều 26 instances in final_entities (DUPLICATE): {dieu26_all}")
+    elif dieu26_all:
+        logger.info(f"DEBUG: Found 1 Điều 26 in final_entities: {dieu26_all}")
+
     # Boost rank for entities whose names match the query keywords
     # This ensures entities directly relevant to the query survive truncation
     
@@ -3715,6 +3756,16 @@ async def _apply_token_truncation(
     ]
     if khoan_10_entities:
         logger.info(f"DEBUG Khoản 10 - Điều 23 position after sort: {khoan_10_entities}")
+    
+    # Debug: Check for Điều 26 - Luật Doanh nghiệp 2020
+    dieu_26_entities = [
+        (i, e.get("entity_name"), e.get("rank", 0), e.get("is_supplementary", False), e.get("is_direct_link", False))
+        for i, e in enumerate(final_entities)
+        if "điều 26" in e.get("entity_name", "").lower() and "luật doanh nghiệp" in e.get("entity_name", "").lower()
+    ]
+    if dieu_26_entities:
+        logger.info(f"DEBUG Điều 26 position after sort: {dieu_26_entities}")
+
 
     # Create mappings from entity/relation identifiers to original data
     entity_id_to_original = {}
@@ -3830,6 +3881,14 @@ async def _apply_token_truncation(
         khoan10_entities = [e for e in filtered_entities if "Khoản 10" in e.get("entity_name", "")]
         if khoan10_entities:
             logger.info(f"DEBUG: Khoản 10 in filtered_entities: {[(e.get('entity_name'), e.get('source_id'), e.get('is_supplementary'), e.get('is_direct_link')) for e in khoan10_entities]}")
+        
+        # Debug: Check if Điều 26 is in filtered entities
+        dieu26_entities = [e for e in filtered_entities if "điều 26" in e.get("entity_name", "").lower() and "luật doanh nghiệp" in e.get("entity_name", "").lower()]
+        if dieu26_entities:
+            logger.info(f"DEBUG: Điều 26 in filtered_entities: YES - {[(e.get('entity_name'), e.get('rank')) for e in dieu26_entities]}")
+        else:
+            logger.info(f"DEBUG: Điều 26 in filtered_entities: NO - filtered out during truncation")
+
 
     filtered_relations = []
     filtered_relation_id_to_original = {}
@@ -4731,6 +4790,31 @@ async def _merge_all_chunks(
     if vector_priority_count > 0:
         logger.info(f"Added {vector_priority_count} top vector chunks as HIGH priority (with {amendment_injection_count} amendments, {cross_ref_injection_count} cross-refs)")
     
+    # NEW: Also add chunks from HIGH-RANK entities (rank > 9000) to ensure they survive truncation
+    # This ensures form templates (Mẫu số 2) with boosted entities get their chunks included early
+    HIGH_RANK_THRESHOLD = 9000
+    high_rank_entity_chunks = [c for c in entity_chunks if c.get("entity_rank", 0) > HIGH_RANK_THRESHOLD and c.get("is_priority")]
+    # Sort by entity_rank descending
+    high_rank_entity_chunks.sort(key=lambda c: c.get("entity_rank", 0), reverse=True)
+    high_rank_count = 0
+    for chunk in high_rank_entity_chunks[:15]:  # Limit to top 15 high-rank chunks
+        chunk_id = chunk.get("__id__") or chunk.get("chunk_id") or chunk.get("id")
+        if chunk_id and chunk_id not in seen_chunk_ids:
+            seen_chunk_ids.add(chunk_id)
+            merged_chunks.append({
+                "content": chunk["content"],
+                "file_path": chunk.get("file_path", "unknown_source"),
+                "chunk_id": chunk_id,
+                "is_priority": True,
+                "source": "high_rank_entity",
+                "entity_rank": chunk.get("entity_rank", 0),
+            })
+            high_rank_count += 1
+            logger.info(f"DEBUG: Added high-rank entity chunk {chunk_id[:30]} with rank={chunk.get('entity_rank', 0)}")
+    if high_rank_count > 0:
+        logger.info(f"Added {high_rank_count} chunks from high-rank entities (rank > {HIGH_RANK_THRESHOLD})")
+
+    
     # DISABLED: Query title matching - causes linear scan of ALL chunks which is very slow
     # This was scanning entire text_chunks_db._data.keys() which causes O(n) performance
     # If needed, this should be implemented using vector search instead
@@ -5016,12 +5100,14 @@ async def _build_context_str(
     chunk_tracking: dict = None,
     entity_id_to_original: dict = None,
     relation_id_to_original: dict = None,
+    domain: DomainConfig | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """
     Build the final LLM context string with token processing.
     This includes dynamic token calculation and final chunk truncation.
     """
     tokenizer = global_config.get("tokenizer")
+    logger.info(f"[DEBUG-CONTEXT] domain={domain.name if domain else 'None'}, has_rag_response={domain.rag_response is not None if domain else False}")
     if not tokenizer:
         logger.error("Missing tokenizer, cannot build LLM context")
         # Return empty raw data structure when no tokenizer
@@ -5043,9 +5129,9 @@ async def _build_context_str(
         global_config.get("max_total_tokens", DEFAULT_MAX_TOTAL_TOKENS),
     )
 
-    # Get the system prompt template from PROMPTS or global_config
+    # Get the system prompt template from domain config or global_config or PROMPTS
     sys_prompt_template = global_config.get(
-        "system_prompt_template", PROMPTS["rag_response"]
+        "system_prompt_template", get_prompt("rag_response", domain)
     )
 
     kg_context_template = PROMPTS["kg_query_context"]
@@ -5164,6 +5250,21 @@ async def _build_context_str(
         else:
             logger.info(f"DEBUG: Điều 93 chunk 22f37374 NOT in merged_chunks")
 
+    # Check if Mẫu số 2 chunk (23fad5cb) is in truncated_chunks
+    mauso2_truncated = [c for c in truncated_chunks if '23fad5cb' in str(c.get('chunk_id', ''))]
+    if mauso2_truncated:
+        content = mauso2_truncated[0].get('content', '')[:200]
+        has_url = 'thuvienphapluat' in mauso2_truncated[0].get('content', '')
+        logger.info(f"DEBUG: Mẫu số 2 chunk 23fad5cb IN truncated_chunks, has_url={has_url}, content_preview={content}")
+    else:
+        mauso2_merged = [c for c in merged_chunks if '23fad5cb' in str(c.get('chunk_id', ''))]
+        if mauso2_merged:
+            pos = merged_chunks.index(mauso2_merged[0]) if mauso2_merged else -1
+            logger.info(f"DEBUG: Mẫu số 2 chunk 23fad5cb in MERGED at position {pos}/{len(merged_chunks)}, but NOT in truncated")
+        else:
+            logger.info(f"DEBUG: Mẫu số 2 chunk 23fad5cb NOT in merged_chunks")
+
+
     # Generate reference list from truncated chunks using the new common function
     reference_list, truncated_chunks = generate_reference_list_from_chunks(
         truncated_chunks
@@ -5263,6 +5364,7 @@ async def _build_query_context(
     query_param: QueryParam,
     chunks_vdb: BaseVectorStorage = None,
     entity_chunks_db: BaseKVStorage = None,
+    domain: DomainConfig | None = None,
 ) -> QueryContextResult | None:
     """
     Main query context building function using the new 4-stage architecture:
@@ -5347,6 +5449,7 @@ async def _build_query_context(
         chunk_tracking=search_result["chunk_tracking"],
         entity_id_to_original=truncation_result["entity_id_to_original"],
         relation_id_to_original=truncation_result["relation_id_to_original"],
+        domain=domain,
     )
     logger.info(f"[PERF] Stage 4 (Build Context): {_time.time() - _stage4_start:.2f}s")
     logger.info(f"[PERF] Total _build_query_context: {_time.time() - _total_start:.2f}s")
@@ -5400,9 +5503,15 @@ async def _get_node_data(
 
     results = await entities_vdb.query(query, top_k=query_param.top_k)
 
+    # DEBUG: Log top entity results with similarity scores
+    if results:
+        top_entities = [(r.get("entity_name", "?"), r.get("distance", r.get("score", "?"))) for r in results[:15]]
+        logger.info(f"[DEBUG] Top 15 entity vector search results: {top_entities}")
+
     # Extract all entity IDs from your results list
     node_ids = [r["entity_name"] for r in results] if results else []
     seen_entity_ids = set(node_ids)
+
     
     # Also search entities by description if query contains concept keywords
     # This helps find entities like "Điều 195" when querying for concepts like "sở hữu chéo"
@@ -5526,7 +5635,34 @@ async def _expand_entities_by_hop(
     seen_entity_names = {e["entity_name"] for e in initial_entities}
     seen_relation_pairs = {r["src_tgt"] for r in initial_relations}
 
-    all_entities = list(initial_entities)
+    # IMPORTANT: Boost initial entities from direct vector search  
+    # Only boost TOP N entities (ordered by similarity), with decreasing boost based on position
+    # This ensures high-similarity entities (like Điều 26) rank above generic entities
+    TOP_N_TO_BOOST = 20  # Only boost top 20 entities from vector search
+    BASE_BOOST = 10000   # Starting boost for top entity
+    BOOST_DECREASE = 200  # Decrease per position
+    
+    all_entities = []
+    boosted_count = 0
+    for idx, entity in enumerate(initial_entities):
+        boosted_entity = entity.copy()
+        # Only boost top N entities from vector search (they're ordered by similarity)
+        if idx < TOP_N_TO_BOOST and not boosted_entity.get("is_direct_link"):
+            boosted_entity["is_direct_link"] = True
+            boosted_entity["is_supplementary"] = True  # For sorting purposes
+            # Sliding boost: top entity gets BASE_BOOST, decreasing for lower positions
+            position_boost = max(BASE_BOOST - (idx * BOOST_DECREASE), 6000)  # Minimum 6000
+            current_rank = boosted_entity.get("rank", 0)
+            boosted_entity["rank"] = current_rank + position_boost
+            boosted_count += 1
+        all_entities.append(boosted_entity)
+    
+    if boosted_count > 0:
+        boosted_sample = [(e.get("entity_name", "?")[:40], e.get("rank", 0)) for e in all_entities[:10]]
+        logger.info(f"[HOP] Boosted {boosted_count}/{len(initial_entities)} direct search entities (top {TOP_N_TO_BOOST}). Sample: {boosted_sample}")
+
+
+
     all_relations = list(initial_relations)
 
     # Find entities connected via relations but not yet in our entity list
@@ -5968,8 +6104,14 @@ async def _find_related_text_unit_from_entities(
     if not node_datas:
         return []
 
+    # Debug: Check Điều 26 in node_datas before processing
+    dieu26_check = [e for e in node_datas if "Điều 26 - Luật Doanh nghiệp" in e.get("entity_name", "")]
+    if dieu26_check:
+        logger.info(f"DEBUG: Điều 26 in node_datas: {[(e.get('entity_name')[:50], e.get('rank'), e.get('is_direct_link'), e.get('is_supplementary')) for e in dieu26_check]}")
+
     # Step 1: Collect all text chunks for each entity
     entities_with_chunks = []
+
     for entity in node_datas:
         if entity.get("source_id"):
             chunks = split_string_by_multi_markers(

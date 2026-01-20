@@ -2,7 +2,7 @@ import { useState, useCallback } from 'react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
 import Button from '@/components/ui/Button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select'
-import { useSettingsStore } from '@/stores/settings'
+import { useSettingsStore, type Domain } from '@/stores/settings'
 import { PaletteIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { cn } from '@/lib/utils'
@@ -21,6 +21,9 @@ export default function AppSettings({ className }: AppSettingsProps) {
   const theme = useSettingsStore.use.theme()
   const setTheme = useSettingsStore.use.setTheme()
 
+  const domain = useSettingsStore.use.domain()
+  const setDomain = useSettingsStore.use.setDomain()
+
   const handleLanguageChange = useCallback((value: string) => {
     setLanguage(value as 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW')
   }, [setLanguage])
@@ -28,6 +31,10 @@ export default function AppSettings({ className }: AppSettingsProps) {
   const handleThemeChange = useCallback((value: string) => {
     setTheme(value as 'light' | 'dark' | 'system')
   }, [setTheme])
+
+  const handleDomainChange = useCallback((value: string) => {
+    setDomain(value as Domain)
+  }, [setDomain])
 
   return (
     <Popover open={opened} onOpenChange={setOpened}>
@@ -38,6 +45,19 @@ export default function AppSettings({ className }: AppSettingsProps) {
       </PopoverTrigger>
       <PopoverContent side="bottom" align="end" className="w-56">
         <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-2">
+            <label className="text-sm font-medium">{t('settings.domain', 'Domain')}</label>
+            <Select value={domain} onValueChange={handleDomainChange}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="business">Luật Doanh nghiệp</SelectItem>
+                <SelectItem value="healthcare">Luật Y tế</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
           <div className="flex flex-col gap-2">
             <label className="text-sm font-medium">{t('settings.language')}</label>
             <Select value={language} onValueChange={handleLanguageChange}>

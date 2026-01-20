@@ -50,6 +50,7 @@ from lightrag.api.routers.document_routes import (
     create_document_routes,
 )
 from lightrag.api.routers.query_routes import create_query_routes
+from lightrag.domains import business_config, healthcare_config
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
 
@@ -1045,7 +1046,20 @@ def create_app(args):
             api_key,
         )
     )
-    app.include_router(create_query_routes(rag, api_key, args.top_k))
+    # Mount query routes for each domain
+    # Business domain - default routes at /query (backward compatible) and /api/business
+    app.include_router(
+        create_query_routes(rag, api_key, args.top_k, domain=business_config)
+    )
+    app.include_router(
+        create_query_routes(rag, api_key, args.top_k, domain=business_config),
+        prefix="/api/business"
+    )
+    # Healthcare domain - routes at /api/healthcare
+    app.include_router(
+        create_query_routes(rag, api_key, args.top_k, domain=healthcare_config),
+        prefix="/api/healthcare"
+    )
     app.include_router(create_graph_routes(rag, api_key))
 
     # Add Ollama API routes

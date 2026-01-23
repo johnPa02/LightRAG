@@ -2660,13 +2660,29 @@ async def process_chunks_unified(
             if not unique_chunks:
                 return []
 
-    # 3. Apply chunk_top_k limiting if specified
+    # 3. Apply chunk_top_k limiting if specified (but preserve priority chunks)
     if query_param.chunk_top_k is not None and query_param.chunk_top_k > 0:
         if len(unique_chunks) > query_param.chunk_top_k:
-            unique_chunks = unique_chunks[: query_param.chunk_top_k]
-        logger.debug(
-            f"Kept chunk_top-k: {len(unique_chunks)} chunks (deduplicated original: {origin_count})"
-        )
+            # Separate priority and non-priority chunks
+            priority_chunks = [c for c in unique_chunks if c.get("is_priority")]
+            non_priority_chunks = [c for c in unique_chunks if not c.get("is_priority")]
+            
+            # Limit priority chunks to chunk_top_k, then fill with non-priority if needed
+            if len(priority_chunks) >= query_param.chunk_top_k:
+                # Too many priority chunks - take only top chunk_top_k
+                unique_chunks = priority_chunks[:query_param.chunk_top_k]
+            else:
+                # Keep all priority chunks, fill remaining with non-priority
+                remaining_slots = query_param.chunk_top_k - len(priority_chunks)
+                unique_chunks = priority_chunks + non_priority_chunks[:remaining_slots]
+            
+            logger.debug(
+                f"Kept chunk_top-k: {len(unique_chunks)} chunks (priority={len(priority_chunks)}, non-priority={len(unique_chunks) - min(len(priority_chunks), query_param.chunk_top_k)}, original: {origin_count})"
+            )
+        else:
+            logger.debug(
+                f"Kept chunk_top-k: {len(unique_chunks)} chunks (deduplicated original: {origin_count})"
+            )
 
     # 4. Token-based final truncation
     tokenizer = global_config.get("tokenizer")
@@ -2682,6 +2698,16 @@ async def process_chunks_unified(
 
         original_count = len(unique_chunks)
 
+        # 4a. Sort chunks to ensure priority chunks with high rank come first
+        # This ensures that when token truncation occurs, high-priority chunks are preserved
+        unique_chunks.sort(
+            key=lambda c: (
+                -1 if c.get("is_priority") else 0,  # Priority chunks first
+                -(c.get("entity_rank") or 0),  # Higher rank first
+            )
+        )
+
+        # 4. Token-based overall truncation
         unique_chunks = truncate_list_by_token_size(
             unique_chunks,
             key=lambda x: "\n".join(

@@ -5032,6 +5032,7 @@ async def _merge_all_chunks(
                     "file_path": chunk.get("file_path", "unknown_source"),
                     "chunk_id": chunk_id,
                     "is_priority": True,
+                    "entity_rank": chunk.get("entity_rank", 0),
                 }
             )
             priority_count += 1
@@ -5045,6 +5046,9 @@ async def _merge_all_chunks(
             # Debug: Check if this is Khoản 5a chunk
             if "ffacaa2e" in chunk_id:
                 logger.info(f"DEBUG: Added Khoản 5a chunk ffacaa2e to merged_chunks at position {len(merged_chunks)}, entity_rank={chunk.get('entity_rank', 0)}, content[:100]={chunk.get('content', '')[:100]}")
+            # Debug: Check if this is Phụ lục II D61.9 chunk
+            if "94f1e306" in chunk_id:
+                logger.info(f"DEBUG: Added Phụ lục II D61.9 chunk 94f1e306 to merged_chunks at position {len(merged_chunks)}")
     
     if priority_count > 0:
         logger.info(f"Added {priority_count} priority chunks from supplementary entities (sorted by entity_rank)")
@@ -5370,7 +5374,7 @@ async def _build_context_str(
         relation_id_to_original,
     )
     logger.debug(
-        f"[_build_context_str] Final data after conversion: {len(final_data.get('entities', []))} entities, {len(final_data.get('relationships', []))} relationships, {len(final_data.get('chunks', []))} chunks"
+        f"[_build_context_str] Final data after conversion: {len(final_data.get('data', {}).get('entities', []))} entities, {len(final_data.get('data', {}).get('relationships', []))} relationships, {len(final_data.get('data', {}).get('chunks', []))} chunks"
     )
     return result, final_data
 

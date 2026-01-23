@@ -290,6 +290,46 @@ async def ali_rerank(
     )
 
 
+async def voyage_rerank(
+    query: str,
+    documents: List[str],
+    top_n: Optional[int] = None,
+    api_key: Optional[str] = None,
+    model: str = "rerank-2",
+    base_url: str = "https://api.voyageai.com/v1/rerank",
+    extra_body: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Rerank documents using Voyage AI API.
+
+    Args:
+        query: The search query
+        documents: List of strings to rerank
+        top_n: Number of top results to return
+        api_key: API key
+        model: rerank model name (rerank-2, rerank-2-lite)
+        base_url: API endpoint
+        extra_body: Additional body for http request(reserved for extra params)
+
+    Returns:
+        List of dictionary of ["index": int, "relevance_score": float]
+    """
+    if api_key is None:
+        api_key = os.getenv("VOYAGE_API_KEY") or os.getenv("EMBEDDING_BINDING_API_KEY") or os.getenv("RERANK_BINDING_API_KEY")
+
+    return await generic_rerank_api(
+        query=query,
+        documents=documents,
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
+        top_n=top_n,
+        return_documents=False,
+        extra_body=extra_body,
+        response_format="standard",
+    )
+
+
 """Please run this test as a module:
 python -m lightrag.rerank
 """

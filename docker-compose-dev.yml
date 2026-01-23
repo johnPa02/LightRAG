@@ -1,8 +1,63 @@
 # DEV Environment - Runs on port 9622
-# Shares Neo4j and Qdrant with production
+# Has separate Neo4j and Qdrant instances for development
 # Usage: docker compose -f docker-compose-dev.yml up -d
+# Sync: ./scripts/sync_databases.sh prod-to-dev --all
+# Docs: docs/DevEnvironment.md
 
 services:
+  # ============================================
+  # DEV Databases - Isolated from Production
+  # ============================================
+  neo4j-dev:
+    container_name: neo4j-dev
+    image: neo4j:5.26.0-community
+    ports:
+      - "7475:7474"  # HTTP (dev)
+      - "7688:7687"  # Bolt (dev)
+    environment:
+      - NEO4J_AUTH=${NEO4J_USERNAME:-neo4j}/${NEO4J_PASSWORD:-lightrag123}
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_apoc_export_file_enabled=true
+      - NEO4J_apoc_import_file_enabled=true
+      - NEO4J_apoc_import_file_use__neo4j__config=true
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_dbms_security_procedures_allowlist=apoc.*
+    volumes:
+      - neo4j_dev_data:/data
+      - neo4j_dev_logs:/logs
+      - ./data/neo4j_backup:/backup  # Shared backup folder for sync
+    networks:
+      - lightrag_dev
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  qdrant-dev:
+    container_name: qdrant-dev
+    image: qdrant/qdrant:latest
+    ports:
+      - "6335:6333"  # HTTP API (dev)
+      - "6336:6334"  # gRPC (dev)
+    volumes:
+      - qdrant_dev_data:/qdrant/storage
+      - ./data/qdrant_backup:/qdrant/snapshots  # Shared backup folder for sync
+    networks:
+      - lightrag_dev
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/6333 && echo -e 'GET /healthz HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && cat <&3 | grep -q 'passed'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ============================================
+  # LightRAG DEV Server
+  # ============================================
   lightrag-dev:
     container_name: lightrag-dev
     build:
@@ -11,8 +66,8 @@ services:
     ports:
       - "9622:9622"
     volumes:
-      - ./data/rag_storage:/app/data/rag_storage
-      - ./data/inputs:/app/data/inputs
+      - ./data/rag_storage_dev:/app/data/rag_storage
+      - ./data/inputs_dev:/app/data/inputs
       - ./config.ini:/app/config.ini
       - ./.env.dev:/app/.env
       # Mount source code for live development
@@ -21,13 +76,22 @@ services:
       - .env.dev
     environment:
       - PORT=9622
-    # Connect to existing neo4j and qdrant from main docker-compose
+    depends_on:
+      neo4j-dev:
+        condition: service_healthy
+      qdrant-dev:
+        condition: service_healthy
     networks:
-      - lightrag_default
+      - lightrag_dev
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
+volumes:
+  neo4j_dev_data:
+  neo4j_dev_logs:
+  qdrant_dev_data:
+
 networks:
-  lightrag_default:
-    external: true
+  lightrag_dev:
+    name: lightrag_dev

@@ -63,6 +63,29 @@ Examples of Multi-Concept Queries:
   high_level: ["người nước ngoài thành lập doanh nghiệp tư nhân", "điều kiện thành lập doanh nghiệp tư nhân cho người nước ngoài"]
   low_level: ["người nước ngoài", "doanh nghiệp tư nhân", "thành lập doanh nghiệp"]
 
+**CRITICAL RULE for Disease/Illness Queries:**
+When query mentions a specific disease (tên bệnh, mã bệnh ICD-10, hoặc tên nhóm bệnh) AND relates to:
+- chuyển tuyến / BHYT / khám chữa bệnh / cấp khám / cấp cơ bản / cấp chuyên sâu / được khám ở cấp nào
+
+You MUST add these keywords to BOTH high_level AND low_level:
+1. "Phụ lục I Thông tư 01/2025/TT-BYT" (danh mục bệnh cấp chuyên sâu)
+2. "Phụ lục II Thông tư 01/2025/TT-BYT" (danh mục bệnh cấp cơ bản)
+3. "Phụ lục III Thông tư 01/2025/TT-BYT" (danh mục bệnh phiếu chuyển 1 năm)
+4. The disease name and ICD-10 code if mentioned
+
+Examples (MUST FOLLOW THIS FORMAT):
+- Query "tôi bị Thoái hóa khớp gối thì được khám ở cấp nào" →
+  high_level: ["Thoái hóa khớp gối được khám ở cấp nào", "Phụ lục I Thông tư 01/2025/TT-BYT", "Phụ lục II Thông tư 01/2025/TT-BYT", "Phụ lục III Thông tư 01/2025/TT-BYT"]
+  low_level: ["Thoái hóa khớp gối", "M17", "cấp khám bệnh", "Phụ lục I Thông tư 01/2025/TT-BYT", "Phụ lục II Thông tư 01/2025/TT-BYT", "Phụ lục III Thông tư 01/2025/TT-BYT"]
+
+- Query "bệnh Pemphigus được khám ở cấp nào" →
+  high_level: ["Pemphigus được khám ở cấp nào", "Phụ lục I Thông tư 01/2025/TT-BYT", "Phụ lục II Thông tư 01/2025/TT-BYT", "Phụ lục III Thông tư 01/2025/TT-BYT"]
+  low_level: ["Pemphigus", "L10", "cấp khám bệnh", "Phụ lục I Thông tư 01/2025/TT-BYT", "Phụ lục II Thông tư 01/2025/TT-BYT", "Phụ lục III Thông tư 01/2025/TT-BYT"]
+
+- Query "Người bệnh D61.9 không có giấy chuyển tuyến phải làm thế nào?" →
+  high_level: ["D61.9 không có giấy chuyển tuyến", "Phụ lục I Thông tư 01/2025/TT-BYT", "Phụ lục II Thông tư 01/2025/TT-BYT", "Phụ lục III Thông tư 01/2025/TT-BYT"]
+  low_level: ["D61.9", "suy tủy xương", "giấy chuyển tuyến", "Phụ lục I Thông tư 01/2025/TT-BYT", "Phụ lục II Thông tư 01/2025/TT-BYT", "Phụ lục III Thông tư 01/2025/TT-BYT"]
+
 
 high_level_keywords:
 - **CRITICAL**: Include the FULL query phrase as-is if it describes a legal procedure/object:
@@ -128,6 +151,59 @@ Produce a legal answer that:
 - Is legally precise and verifiable
 - Is based **EXCLUSIVELY** on Document Chunks in the Context
 - Cites ONLY the provisions DIRECTLY relevant to the question
+
+
+---HEALTHCARE RULES---
+
+**Rule 1: Phụ lục I/II/III Analysis (BẮT BUỘC)**
+Khi hỏi về bệnh/mã ICD-10 liên quan đến BHYT/chuyển tuyến/cấp khám:
+
+⚠️ CẢNH BÁO QUAN TRỌNG #1: CHỈ SỬ DỤNG THÔNG TƯ 01/2025/TT-BYT!
+- Chỉ tìm trong các Phụ lục của **Thông tư 01/2025/TT-BYT**
+- KHÔNG sử dụng Phụ lục từ các Thông tư khác (như 20/2022, 25/2025, 26/2025...)
+- Các Thông tư khác là về thuốc, bệnh dài ngày... KHÔNG phải về cấp khám bệnh!
+
+⚠️ CẢNH BÁO QUAN TRỌNG #2: PHÂN BIỆT RÕ 3 PHỤ LỤC CỦA THÔNG TƯ 01/2025!
+- PHỤ LỤC I Thông tư 01/2025 = "CẤP CHUYÊN SÂU" → Bệnh được khám tại cấp chuyên sâu
+- PHỤ LỤC II Thông tư 01/2025 = "CẤP CƠ BẢN" → Bệnh được khám tại cấp cơ bản  
+- PHỤ LỤC III Thông tư 01/2025 = "PHIẾU CHUYỂN...GIÁ TRỊ...MỘT NĂM" → Bệnh được dùng phiếu chuyển tuyến 1 năm
+
+KHÔNG ĐƯỢC NHẦM LẪN:
+- Phụ lục III với Phụ lục I (Phụ lục III là phiếu chuyển 1 năm, KHÔNG phải cấp chuyên sâu!)
+- Phụ lục của Thông tư khác với Phụ lục của Thông tư 01/2025
+
+BƯỚC 1: Tìm bệnh trong Phụ lục I Thông tư 01/2025 (CẤP CHUYÊN SÂU)
+- Tìm trong bảng có tiêu đề: "Thông tư 01/2025...PHỤ LỤC I DANH MỤC...CẤP CHUYÊN SÂU"
+- Nếu bảng KHÔNG có "Thông tư 01/2025" VÀ "CẤP CHUYÊN SÂU" → KHÔNG phải Phụ lục I!
+- Format dòng: "| STT | Tên bệnh | Mã ICD-10 | Điều kiện |"
+- Ghi nhận: Có/Không, và điều kiện nếu có
+
+BƯỚC 2: Tìm bệnh trong Phụ lục II Thông tư 01/2025 (CẤP CƠ BẢN)  
+- Tìm trong bảng có tiêu đề: "Thông tư 01/2025...PHỤ LỤC II DANH MỤC...CẤP CƠ BẢN"
+- Nếu bảng KHÔNG có "Thông tư 01/2025" VÀ "CẤP CƠ BẢN" → KHÔNG phải Phụ lục II!
+- KHÔNG được lấy thông tin từ Thông tư 25/2025 hay các Thông tư khác!
+- Format dòng: "| STT | Tên bệnh | Mã ICD-10 | Điều kiện |"
+- Ghi nhận: Có/Không
+
+BƯỚC 3: Tìm bệnh trong Phụ lục III Thông tư 01/2025 (PHIẾU CHUYỂN 1 NĂM)
+- Tìm trong bảng có tiêu đề: "Thông tư 01/2025...PHỤ LỤC III DANH MỤC...PHIẾU CHUYỂN...GIÁ TRỊ...MỘT NĂM"
+- Đây KHÔNG phải bệnh cấp chuyên sâu! Đây là bệnh được dùng phiếu chuyển tuyến có giá trị 1 năm
+- Format dòng: "| STT | Tên bệnh | Mã ICD-10 | Điều kiện |"
+- Ghi nhận: Có/Không, và điều kiện nếu có
+
+BƯỚC 4: Kết luận
+- Có trong Phụ lục I Thông tư 01/2025 (CẤP CHUYÊN SÂU) → ✅ Được hưởng BHYT tại cấp CHUYÊN SÂU
+- Có trong Phụ lục II Thông tư 01/2025 (CẤP CƠ BẢN) → ✅ Được hưởng BHYT tại cấp CƠ BẢN
+- Có trong Phụ lục III Thông tư 01/2025 (PHIẾU CHUYỂN 1 NĂM) → ✅ Được sử dụng phiếu chuyển tuyến có giá trị 1 năm
+- Có trong nhiều Phụ lục → Ghi rõ từng trường hợp và điều kiện tương ứng
+- KHÔNG có trong bất kỳ Phụ lục nào của Thông tư 01/2025 → Khám theo tuyến thông thường
+
+**QUAN TRỌNG:**
+- Phải search CẢ BA Phụ lục I, II VÀ III **của Thông tư 01/2025** trong context trước khi trả lời
+- KHÔNG được lấy thông tin từ các Thông tư khác (25/2025, 26/2025, 20/2022...)
+- Nếu bệnh có trong nhiều Phụ lục, PHẢI nói rõ TẤT CẢ các quyền lợi tương ứng
+
+**(Reserved for future rules)**
 
 
 ---Internal Logic (DO NOT OUTPUT THIS)---
@@ -228,6 +304,17 @@ Ví dụ SAI (hỏi lan man):
 7. Use the same language as user query (Vietnamese)
 
 8. Use Markdown formatting
+
+9. **Xử lý cụm từ loại trừ**: Khi context chứa các cụm từ như "trừ mã", "không áp dụng", "ngoại trừ", "loại trừ" liên quan đến đối tượng được hỏi, bạn PHẢI giải thích rõ ý nghĩa của việc loại trừ đó. Ví dụ: nếu Phụ lục I ghi "D61 (trừ mã D61.9)" và người hỏi về D61.9, bạn phải nói rõ D61.9 KHÔNG thuộc danh mục Phụ lục I và hệ quả của việc đó.
+
+10. **CRITICAL - Phân biệt Phụ lục I và Phụ lục II của Thông tư 01/2025/TT-BYT**:
+    - **Phụ lục I**: Danh mục bệnh được KCB tại cơ sở **CẤP CHUYÊN SÂU** không cần giấy chuyển tuyến
+    - **Phụ lục II**: Danh mục bệnh được KCB tại cơ sở **CẤP CƠ BẢN** không cần giấy chuyển tuyến
+    - Khi một mã bệnh bị **LOẠI TRỪ** khỏi Phụ lục I (ví dụ: "D61 trừ mã D61.9"), điều này có nghĩa:
+      * Mã bệnh đó KHÔNG được hưởng quyền lợi khi tự đến cấp chuyên sâu không có giấy chuyển tuyến
+      * Nếu mã bệnh đó có trong Phụ lục II, người bệnh CHỈ được hưởng quyền lợi tại cơ sở cấp cơ bản
+      * Nếu tự đến cấp chuyên sâu mà không có giấy chuyển tuyến → KHÔNG được hưởng BHYT (trừ cấp cứu)
+    - Bạn PHẢI nêu rõ cả hai trường hợp: được hưởng ở đâu VÀ không được hưởng ở đâu
 
 
 ---User Query---

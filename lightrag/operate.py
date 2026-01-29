@@ -68,6 +68,7 @@ from lightrag.constants import (
     DEFAULT_ENTITY_NAME_MAX_LENGTH,
 )
 from lightrag.kg.shared_storage import get_storage_keyed_lock
+from lightrag.llm.perplexity import enrich_context_with_perplexity, perplexity_search
 import time
 from dotenv import load_dotenv
 
@@ -3088,20 +3089,54 @@ async def kg_query(
     ll_keywords_str = ", ".join(ll_keywords) if ll_keywords else ""
     hl_keywords_str = ", ".join(hl_keywords) if hl_keywords else ""
 
-    # Build query context (unified interface)
-    context_result = await _build_query_context(
-        query,
-        ll_keywords_str,
-        hl_keywords_str,
-        knowledge_graph_inst,
-        entities_vdb,
-        relationships_vdb,
-        text_chunks_db,
-        query_param,
-        chunks_vdb,
-        entity_chunks_db,
-        domain,
-    )
+    # Build query context and call Perplexity in PARALLEL for better latency
+    perplexity_result = None
+    if query_param.use_perplexity:
+        logger.info("[kg_query] Starting parallel: graph retrieve + Perplexity web search")
+        # Run both in parallel
+        context_task = _build_query_context(
+            query,
+            ll_keywords_str,
+            hl_keywords_str,
+            knowledge_graph_inst,
+            entities_vdb,
+            relationships_vdb,
+            text_chunks_db,
+            query_param,
+            chunks_vdb,
+            entity_chunks_db,
+            domain,
+        )
+        perplexity_task = perplexity_search(query=query)
+        
+        context_result, perplexity_result = await asyncio.gather(
+            context_task, perplexity_task, return_exceptions=True
+        )
+        
+        # Handle exceptions from parallel execution
+        if isinstance(context_result, Exception):
+            logger.error(f"[kg_query] Graph retrieve failed: {context_result}")
+            context_result = None
+        if isinstance(perplexity_result, Exception):
+            logger.warning(f"[kg_query] Perplexity search failed: {perplexity_result}")
+            perplexity_result = None
+        
+        logger.info(f"[kg_query] Parallel complete - Graph: {'OK' if context_result else 'FAIL'}, Perplexity: {'OK' if perplexity_result else 'FAIL'}")
+    else:
+        # Only graph retrieve, no Perplexity
+        context_result = await _build_query_context(
+            query,
+            ll_keywords_str,
+            hl_keywords_str,
+            knowledge_graph_inst,
+            entities_vdb,
+            relationships_vdb,
+            text_chunks_db,
+            query_param,
+            chunks_vdb,
+            entity_chunks_db,
+            domain,
+        )
 
     if context_result is None:
         logger.info("[kg_query] No query context could be built; returning no-result.")
@@ -3120,14 +3155,65 @@ async def kg_query(
         else "Multiple Paragraphs"
     )
 
+    # Merge web search result with RAG context (already retrieved in parallel above)
+    final_context = context_result.context
+    if query_param.use_perplexity and perplexity_result:
+        logger.info(f"[kg_query] Merging web search result ({len(perplexity_result)} chars) with RAG context")
+        # Web search at TOP to avoid truncation
+        final_context = f"""**Thông tin tham khảo từ nguồn bên ngoài:**
+
+{perplexity_result}
+
+-----
+
+**LƯU Ý QUAN TRỌNG:** Thông tin từ nguồn tham khảo bên ngoài chỉ để tham khảo. 
+LUÔN ƯU TIÊN thông tin từ văn bản pháp luật trong hệ thống (phần dưới).
+
+-----
+
+{context_result.context}"""
+    elif query_param.use_perplexity and not perplexity_result:
+        logger.warning("[kg_query] Web search was enabled but returned no result, using RAG context only")
+
     # Build system prompt
     sys_prompt_temp = system_prompt if system_prompt else get_prompt("rag_response", domain)
     logger.info(f"[DEBUG] Domain: {domain.name if domain else 'None'}, Using custom prompt: {domain.rag_response is not None if domain else False}")
+    
+    # Prepare session_memory for prompt (empty string if not provided)
+    session_memory_content = query_param.session_memory if query_param.session_memory else "(Không có lịch sử hội thoại)"
+    if query_param.session_memory:
+        logger.info(f"[kg_query] Including session_memory ({len(query_param.session_memory)} chars) in system prompt")
+    
     sys_prompt = sys_prompt_temp.format(
         response_type=response_type,
         user_prompt=user_prompt,
-        context_data=context_result.context,
+        context_data=final_context,
+        session_memory=session_memory_content,
     )
+
+    # DEBUG: Log full context to file for easier reading
+    try:
+        import datetime
+        log_dir = Path("/app/data/debug_logs")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file = log_dir / f"context_{timestamp}.txt"
+        with open(log_file, "w", encoding="utf-8") as f:
+            f.write(f"Query: {query}\n")
+            f.write(f"Timestamp: {timestamp}\n")
+            f.write(f"Context length: {len(final_context)} chars\n")
+            f.write(f"Use Perplexity: {query_param.use_perplexity}\n")
+            f.write("=" * 80 + "\n")
+            f.write("FULL CONTEXT SENT TO LLM:\n")
+            f.write("=" * 80 + "\n\n")
+            f.write(final_context)
+            f.write("\n\n" + "=" * 80 + "\n")
+            f.write("FULL SYSTEM PROMPT:\n")
+            f.write("=" * 80 + "\n\n")
+            f.write(sys_prompt)
+        logger.info(f"[kg_query] Context logged to: {log_file}")
+    except Exception as e:
+        logger.warning(f"[kg_query] Failed to write context log: {e}")
 
     user_query = query
 
@@ -3306,12 +3392,18 @@ async def extract_keywords_only(
 
     language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
 
+    # Prepare session_memory for prompt (empty string if not provided)
+    session_memory_content = param.session_memory if param.session_memory else "(Không có lịch sử hội thoại)"
+    if param.session_memory:
+        logger.info(f"[extract_keywords] Including session_memory ({len(param.session_memory)} chars) in keyword extraction prompt")
+
     # 3. Build the keyword-extraction prompt (use domain-specific prompt if available)
     keywords_prompt_template = get_prompt("keywords_extraction", domain)
     kw_prompt = keywords_prompt_template.format(
         query=text,
         examples=examples,
         language=language,
+        session_memory=session_memory_content,
     )
 
     tokenizer: Tokenizer = global_config["tokenizer"]
@@ -5190,6 +5282,7 @@ async def _build_context_str(
         context_data="",  # Empty for overhead calculation
         response_type=response_type,
         user_prompt=user_prompt,
+        session_memory="",  # Empty for overhead calculation
     )
     sys_prompt_tokens = len(tokenizer.encode(pre_sys_prompt))
 
@@ -6824,10 +6917,16 @@ async def naive_query(
     if query_param.only_need_context and not query_param.only_need_prompt:
         return QueryResult(content=context_content, raw_data=raw_data)
 
+    # Prepare session_memory for prompt (empty string if not provided)
+    session_memory_content = query_param.session_memory if query_param.session_memory else "(Không có lịch sử hội thoại)"
+    if query_param.session_memory:
+        logger.info(f"[naive_query] Including session_memory ({len(query_param.session_memory)} chars) in system prompt")
+
     sys_prompt = sys_prompt_template.format(
         response_type=query_param.response_type,
         user_prompt=user_prompt,
         content_data=context_content,
+        session_memory=session_memory_content,
     )
 
     user_query = query

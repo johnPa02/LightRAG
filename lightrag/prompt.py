@@ -628,6 +628,11 @@ You MUST include them in the response:
 
 
 
+---Session Memory (Conversation History Summary)---
+
+{session_memory}
+
+
 ---User Query---
 
 {user_prompt}
@@ -686,6 +691,10 @@ Consider the conversation history if provided to maintain conversational flow an
 ```
 
 6. Additional Instructions: {user_prompt}
+
+---Session Memory (Conversation History Summary)---
+
+{session_memory}
 
 
 ---Context---
@@ -862,6 +871,10 @@ Example with conversation history:
 - Previous: User asked about "Điều 26 Luật Doanh nghiệp 2020"
 - Current: User asks "Còn Điều 27 thì sao?"
 - Keywords should include: ["Điều 27 Luật Doanh nghiệp 2020"] (resolved from context, NOT just "Điều 27")
+
+---Session Memory (Conversation History Summary)---
+
+{session_memory}
 
 User Query: {query}
 """

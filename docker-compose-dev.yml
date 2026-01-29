@@ -47,13 +47,23 @@ services:
       - ./data/qdrant_backup:/qdrant/snapshots  # Shared backup folder for sync
     networks:
       - lightrag_dev
-    restart: unless-stopped
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 1G
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__LOG_LEVEL=INFO
     healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/6333 && echo -e 'GET /healthz HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && cat <&3 | grep -q 'passed'"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
+      test: ["CMD-SHELL", "timeout 5 bash -c 'cat < /dev/null > /dev/tcp/localhost/6333' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
   # ============================================
   # LightRAG DEV Server
@@ -68,6 +78,7 @@ services:
     volumes:
       - ./data/rag_storage_dev:/app/data/rag_storage
       - ./data/inputs_dev:/app/data/inputs
+      - ./data/debug_logs:/app/data/debug_logs
       - ./config.ini:/app/config.ini
       - ./.env.dev:/app/.env
       # Mount source code for live development

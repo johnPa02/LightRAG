@@ -86,6 +86,11 @@ class QueryRequest(BaseModel):
         description="Stores past conversation history to maintain context. Format: [{'role': 'user/assistant', 'content': 'message'}].",
     )
 
+    session_memory: Optional[str] = Field(
+        default=None,
+        description="Session memory containing a summary of the full conversation history. This provides broader context for AI responses.",
+    )
+
     user_prompt: Optional[str] = Field(
         default=None,
         description="User-provided prompt for the query. If provided, this will be used instead of the default value from prompt template.",
@@ -109,6 +114,11 @@ class QueryRequest(BaseModel):
     stream: Optional[bool] = Field(
         default=True,
         description="If True, enables streaming output for real-time responses. Only affects /query/stream endpoint.",
+    )
+
+    use_perplexity: Optional[bool] = Field(
+        default=True,
+        description="If True, enriches RAG context with Perplexity web search results before sending to LLM. Requires PERPLEXITY_API_KEY environment variable.",
     )
 
     @field_validator("query", mode="after")

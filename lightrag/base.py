@@ -141,6 +141,11 @@ class QueryParam:
     Format: [{"role": "user/assistant", "content": "message"}].
     """
 
+    session_memory: str | None = None
+    """Session memory containing a summary of the full conversation history.
+    This provides broader context for AI responses beyond recent conversation_history.
+    """
+
     # TODO: deprecated. No longer used in the codebase, all conversation_history messages is send to LLM
     history_turns: int = int(os.getenv("HISTORY_TURNS", str(DEFAULT_HISTORY_TURNS)))
     """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
@@ -166,6 +171,11 @@ class QueryParam:
     """If True, includes reference list in the response for supported endpoints.
     This parameter controls whether the API response includes a references field
     containing citation information for the retrieved content.
+    """
+
+    use_perplexity: bool = False
+    """If True, enriches RAG context with Perplexity web search results before sending to LLM.
+    Requires PERPLEXITY_API_KEY environment variable to be set.
     """
 
     hop_depth: int = int(os.getenv("HOP_DEPTH", "2"))

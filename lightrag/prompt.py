@@ -633,6 +633,11 @@ You MUST include them in the response:
 {session_memory}
 
 
+---Appendix Content (Supplementary Information)---
+
+{appendix_content}
+
+
 ---User Query---
 
 {user_prompt}
@@ -695,6 +700,11 @@ Consider the conversation history if provided to maintain conversational flow an
 ---Session Memory (Conversation History Summary)---
 
 {session_memory}
+
+
+---Appendix Content (Supplementary Information)---
+
+{appendix_content}
 
 
 ---Context---

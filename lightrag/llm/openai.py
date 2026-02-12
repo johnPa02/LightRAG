@@ -217,14 +217,14 @@ async def openai_complete_if_cache(
     messages.extend(history_messages)
     messages.append({"role": "user", "content": prompt})
 
-    logger.debug("===== Entering func of LLM =====")
-    logger.debug(f"Model: {model}   Base URL: {base_url}")
-    logger.debug(f"Client Configs: {client_configs}")
-    logger.debug(f"Additional kwargs: {kwargs}")
-    logger.debug(f"Num of history messages: {len(history_messages)}")
-    verbose_debug(f"System prompt: {system_prompt}")
-    verbose_debug(f"Query: {prompt}")
-    logger.debug("===== Sending Query to LLM =====")
+    # logger.debug("===== Entering func of LLM =====")
+    # logger.debug(f"Model: {model}   Base URL: {base_url}")
+    # logger.debug(f"Client Configs: {client_configs}")
+    # logger.debug(f"Additional kwargs: {kwargs}")
+    # logger.debug(f"Num of history messages: {len(history_messages)}")
+    # verbose_debug(f"System prompt: {system_prompt}")
+    # verbose_debug(f"Query: {prompt}")
+    # logger.debug("===== Sending Query to LLM =====")
 
     messages = kwargs.pop("messages", messages)
 
@@ -454,8 +454,8 @@ async def openai_complete_if_cache(
             # When using response_format with a Pydantic model, the parsed object
             # is in message.parsed, and we need to convert it back to JSON string
             parsed_obj = getattr(message, "parsed", None)
-            logger.debug(f"Message parsed_obj: {parsed_obj}, type: {type(parsed_obj)}")
-            logger.debug(f"Message content: {getattr(message, 'content', None)}")
+            # logger.debug(f"Message parsed_obj: {parsed_obj}, type: {type(parsed_obj)}")
+            # logger.debug(f"Message content: {getattr(message, 'content', None)}")
             
             if parsed_obj is not None:
                 # Check for refusal first
@@ -475,7 +475,7 @@ async def openai_complete_if_cache(
                 logger.debug(f"Structured output content: {content}")
             else:
                 content = getattr(message, "content", None)
-                logger.debug(f"Regular content: {content}")
+                # logger.debug(f"Regular content: {content}")
 
             reasoning_content = getattr(message, "reasoning_content", "")
 
@@ -531,8 +531,8 @@ async def openai_complete_if_cache(
                 }
                 token_tracker.add_usage(token_counts)
 
-            logger.debug(f"Response content len: {len(final_content)}")
-            verbose_debug(f"Response: {response}")
+            # logger.debug(f"Response content len: {len(final_content)}")
+            # verbose_debug(f"Response: {response}")
 
             return final_content
         finally:

@@ -440,6 +440,27 @@ class LightRAG:
     ollama_server_infos: Optional[OllamaServerInfos] = field(default=None)
     """Configuration for Ollama server information."""
 
+    # Appendix Search (Healthcare Domain)
+    # ---
+
+    appendix_intent_api_url: str | None = field(
+        default_factory=lambda: os.getenv("APPENDIX_INTENT_API_URL")
+    )
+    """URL for intent search API (healthcare domain appendix enrichment)."""
+
+    appendix_vector_api_url: str | None = field(
+        default_factory=lambda: os.getenv("APPENDIX_VECTOR_API_URL")
+    )
+    """URL for vector search API (healthcare domain appendix enrichment)."""
+
+    appendix_confidence_threshold: float = field(
+        default=float(os.getenv("APPENDIX_CONFIDENCE_THRESHOLD", "0.5"))
+    )
+    """Confidence threshold for appendix intent matching."""
+
+    appendix_timeout: float = field(default=float(os.getenv("APPENDIX_TIMEOUT", "10.0")))
+    """Timeout in seconds for appendix API calls."""
+
     _storages_status: StoragesStatus = field(default=StoragesStatus.NOT_CREATED)
 
     def __post_init__(self):

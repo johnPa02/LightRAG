@@ -173,7 +173,7 @@ class QueryParam:
     containing citation information for the retrieved content.
     """
 
-    use_perplexity: bool = False
+    use_perplexity: bool = True
     """If True, enriches RAG context with Perplexity web search results before sending to LLM.
     Requires PERPLEXITY_API_KEY environment variable to be set.
     """

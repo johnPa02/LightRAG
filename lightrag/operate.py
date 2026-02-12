@@ -3013,6 +3013,111 @@ async def extract_entities(
     return chunk_results
 
 
+async def fetch_appendix_content(
+    query: str,
+    global_config: dict,
+) -> str:
+    """
+    Fetch appendix content via two-step API calls for healthcare domain.
+    
+    Step 1: Intent search - get document IDs based on query intent
+    Step 2: Vector search - get relevant chunks from those documents
+    
+    Args:
+        query: User query string
+        global_config: Global configuration dict containing API URLs and settings
+    
+    Returns:
+        Formatted appendix content string, or empty string if not available
+    """
+    intent_url = global_config.get("appendix_intent_api_url")
+    vector_url = global_config.get("appendix_vector_api_url")
+    
+    if not intent_url or not vector_url:
+        logger.debug("[AppendixSearch] URLs not configured, skipping")
+        return ""
+    
+    confidence_threshold = global_config.get("appendix_confidence_threshold", 0.5)
+    timeout = global_config.get("appendix_timeout", 10.0)
+    
+    try:
+        import httpx
+        
+        # Step 1: Intent search
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            # logger.info(f"[AppendixSearch] Step 1: Intent search for query: {query[:100]}")
+            response = await client.post(
+                intent_url,
+                json={"question": query},
+                headers={"Content-Type": "application/json"},
+            )
+            response.raise_for_status()
+            intent_data = response.json()
+        
+        confidence = intent_data.get("confidence", 0.0)
+        matched = intent_data.get("matched", False)
+        
+        # logger.info(f"[AppendixSearch] Intent result - matched={matched}, confidence={confidence:.2f}")
+        
+        if not matched or confidence <= confidence_threshold:
+            # logger.info(f"[AppendixSearch] Skipping - confidence {confidence:.2f} <= threshold {confidence_threshold}")
+            return ""
+        
+        # Extract document IDs from appendices
+        appendices = intent_data.get("appendices", [])
+        document_ids = [app["content"] for app in appendices if "content" in app]
+        
+        if not document_ids:
+            logger.warning("[AppendixSearch] No document IDs found in appendices")
+            return ""
+        
+        # logger.info(f"[AppendixSearch] Found {len(document_ids)} document IDs")
+        
+        # Step 2: Vector search
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            # logger.info(f"[AppendixSearch] Step 2: Vector search with {len(document_ids)} documents")
+            response = await client.post(
+                vector_url,
+                json={
+                    "document_ids": document_ids,
+                    "question": query,
+                },
+                headers={"Content-Type": "application/json"},
+            )
+            response.raise_for_status()
+            vector_data = response.json()
+        
+        chunks = vector_data.get("data", {}).get("chunks", [])
+        chunk_contents = [chunk["content"] for chunk in chunks if "content" in chunk]
+        
+        # logger.info(f"[AppendixSearch] Found {len(chunk_contents)} chunks")
+        
+        if not chunk_contents:
+            return ""
+        
+        # Format content - simple format with appendix names and chunks only
+        appendix_names = [app.get("name", "Unknown") for app in appendices]
+        
+        formatted_parts = [
+            f"**Phụ lục:** {', '.join(appendix_names)}",
+            "",
+        ]
+        
+        for i, content in enumerate(chunk_contents, 1):
+            formatted_parts.append(content.strip())
+            if i < len(chunk_contents):  # Add separator between chunks
+                formatted_parts.append("")
+        
+        result = "\n".join(formatted_parts)
+        # logger.info(f"[AppendixSearch] Formatted appendix content: {len(result)} chars")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"[AppendixSearch] Failed: {e}", exc_info=True)
+        return ""
+
+
 async def kg_query(
     query: str,
     knowledge_graph_inst: BaseGraphStorage,
@@ -3071,8 +3176,8 @@ async def kg_query(
         query, query_param, global_config, hashing_kv, domain
     )
 
-    logger.debug(f"High-level keywords: {hl_keywords}")
-    logger.debug(f"Low-level  keywords: {ll_keywords}")
+    logger.info(f"[kg_query] Keywords - HL: {len(hl_keywords)}, LL: {len(ll_keywords)}")
+    # logger.debug(f"Low-level  keywords: {ll_keywords}")
 
     # Handle empty keywords
     if ll_keywords == [] and query_param.mode in ["local", "hybrid", "mix"]:
@@ -3092,8 +3197,8 @@ async def kg_query(
     # Build query context and call Perplexity in PARALLEL for better latency
     perplexity_result = None
     if query_param.use_perplexity:
-        logger.info("[kg_query] Starting parallel: graph retrieve + Perplexity web search")
-        # Run both in parallel
+        logger.info("[kg_query] Starting parallel: graph retrieve + Perplexity + Appendix")
+        # Run all three in parallel
         context_task = _build_query_context(
             query,
             ll_keywords_str,
@@ -3109,9 +3214,21 @@ async def kg_query(
         )
         perplexity_task = perplexity_search(query=query)
         
-        context_result, perplexity_result = await asyncio.gather(
-            context_task, perplexity_task, return_exceptions=True
-        )
+        # Add appendix search for healthcare domain
+        appendix_task = None
+        if domain and domain.name == "healthcare":
+            appendix_task = fetch_appendix_content(query, global_config)
+        
+        # Gather all tasks
+        if appendix_task:
+            context_result, perplexity_result, appendix_content = await asyncio.gather(
+                context_task, perplexity_task, appendix_task, return_exceptions=True
+            )
+        else:
+            context_result, perplexity_result = await asyncio.gather(
+                context_task, perplexity_task, return_exceptions=True
+            )
+            appendix_content = None
         
         # Handle exceptions from parallel execution
         if isinstance(context_result, Exception):
@@ -3120,11 +3237,16 @@ async def kg_query(
         if isinstance(perplexity_result, Exception):
             logger.warning(f"[kg_query] Perplexity search failed: {perplexity_result}")
             perplexity_result = None
+        if isinstance(appendix_content, Exception):
+            logger.warning(f"[kg_query] Appendix search failed: {appendix_content}")
+            appendix_content = None
         
-        logger.info(f"[kg_query] Parallel complete - Graph: {'OK' if context_result else 'FAIL'}, Perplexity: {'OK' if perplexity_result else 'FAIL'}")
+        # logger.info(f"[kg_query] Parallel complete - Graph: {'OK' if context_result else 'FAIL'}, Perplexity: {'OK' if perplexity_result else 'FAIL'}, Appendix: {'OK' if appendix_content else 'SKIP'}")
     else:
-        # Only graph retrieve, no Perplexity
-        context_result = await _build_query_context(
+        # Graph retrieve + Appendix search (no Perplexity)
+        logger.info("[kg_query] Starting parallel: graph retrieve + Appendix")
+        
+        context_task = _build_query_context(
             query,
             ll_keywords_str,
             hl_keywords_str,
@@ -3137,6 +3259,31 @@ async def kg_query(
             entity_chunks_db,
             domain,
         )
+        
+        # Add appendix search for healthcare domain
+        appendix_task = None
+        if domain and domain.name == "healthcare":
+            appendix_task = fetch_appendix_content(query, global_config)
+        
+        # Gather tasks
+        if appendix_task:
+            context_result, appendix_content = await asyncio.gather(
+                context_task, appendix_task, return_exceptions=True
+            )
+            # Handle appendix exception
+            if isinstance(appendix_content, Exception):
+                logger.warning(f"[kg_query] Appendix search failed: {appendix_content}")
+                appendix_content = None
+        else:
+            context_result = await context_task
+            appendix_content = None
+        
+        # Handle context exception
+        if isinstance(context_result, Exception):
+            logger.error(f"[kg_query] Graph retrieve failed: {context_result}")
+            context_result = None
+        
+        # logger.info(f"[kg_query] Parallel complete - Graph: {'OK' if context_result else 'FAIL'}, Appendix: {'OK' if appendix_content else 'SKIP'}")
 
     if context_result is None:
         logger.info("[kg_query] No query context could be built; returning no-result.")
@@ -3148,7 +3295,7 @@ async def kg_query(
             content=context_result.context, raw_data=context_result.raw_data
         )
 
-    user_prompt = f"\n\n{query_param.user_prompt}" if query_param.user_prompt else "n/a"
+    user_prompt = query
     response_type = (
         query_param.response_type
         if query_param.response_type
@@ -3158,7 +3305,7 @@ async def kg_query(
     # Merge web search result with RAG context (already retrieved in parallel above)
     final_context = context_result.context
     if query_param.use_perplexity and perplexity_result:
-        logger.info(f"[kg_query] Merging web search result ({len(perplexity_result)} chars) with RAG context")
+        # logger.info(f"[kg_query] Merging web search result ({len(perplexity_result)} chars) with RAG context")
         # Web search at TOP to avoid truncation
         final_context = f"""**Thông tin tham khảo từ nguồn bên ngoài:**
 
@@ -3173,22 +3320,34 @@ LUÔN ƯU TIÊN thông tin từ văn bản pháp luật trong hệ thống (ph�
 
 {context_result.context}"""
     elif query_param.use_perplexity and not perplexity_result:
-        logger.warning("[kg_query] Web search was enabled but returned no result, using RAG context only")
+        # logger.warning("[kg_query] Web search was enabled but returned no result, using RAG context only")
+        pass
 
     # Build system prompt
     sys_prompt_temp = system_prompt if system_prompt else get_prompt("rag_response", domain)
-    logger.info(f"[DEBUG] Domain: {domain.name if domain else 'None'}, Using custom prompt: {domain.rag_response is not None if domain else False}")
+    # logger.info(f"[DEBUG] Domain: {domain.name if domain else 'None'}, Using custom prompt: {domain.rag_response is not None if domain else False}")
     
     # Prepare session_memory for prompt (empty string if not provided)
     session_memory_content = query_param.session_memory if query_param.session_memory else "(Không có lịch sử hội thoại)"
     if query_param.session_memory:
-        logger.info(f"[kg_query] Including session_memory ({len(query_param.session_memory)} chars) in system prompt")
+        # logger.info(f"[kg_query] Including session_memory ({len(query_param.session_memory)} chars) in system prompt")
+        pass
+    
+    # Format appendix_content for prompt (already fetched in parallel above)
+    if appendix_content:
+        logger.info(f"[kg_query] Appendix content: {len(appendix_content)} chars")
+        appendix_content_formatted = appendix_content
+    elif domain and domain.name == "healthcare":
+        appendix_content_formatted = "(Không có nội dung phụ lục bổ sung)"
+    else:
+        appendix_content_formatted = "(Không áp dụng cho domain này)"
     
     sys_prompt = sys_prompt_temp.format(
         response_type=response_type,
         user_prompt=user_prompt,
         context_data=final_context,
         session_memory=session_memory_content,
+        appendix_content=appendix_content_formatted,
     )
 
     # DEBUG: Log full context to file for easier reading
@@ -3211,7 +3370,7 @@ LUÔN ƯU TIÊN thông tin từ văn bản pháp luật trong hệ thống (ph�
             f.write("FULL SYSTEM PROMPT:\n")
             f.write("=" * 80 + "\n\n")
             f.write(sys_prompt)
-        logger.info(f"[kg_query] Context logged to: {log_file}")
+        # logger.info(f"[kg_query] Context logged to: {log_file}")
     except Exception as e:
         logger.warning(f"[kg_query] Failed to write context log: {e}")
 
@@ -4653,7 +4812,8 @@ async def _build_amendment_chunk_map(
         amendment_entity_names = _parse_amendment_annotations(content)
         
         if amendment_entity_names:
-            logger.info(f"DEBUG: Chunk {chunk_id[:20]} has amendment annotations: {amendment_entity_names}")
+            # logger.info(f"DEBUG: Chunk {chunk_id[:20]} has amendment annotations: {amendment_entity_names}")
+            pass
         
         for entity_name in amendment_entity_names:
             # Extract "Khoản X" from entity name for precise matching
@@ -4662,7 +4822,7 @@ async def _build_amendment_chunk_map(
             khoan_num = khoan_match.group(1) if khoan_match else None
             dieu_num = dieu_match.group(1) if dieu_match else None
             
-            logger.info(f"DEBUG: Looking for amendment khoan={khoan_num}, dieu={dieu_num}")
+            # logger.info(f"DEBUG: Looking for amendment khoan={khoan_num}, dieu={dieu_num}")
             
             # Try to find matching entity with EXACT Khoản AND Điều number
             matched_chunks = []
@@ -4702,14 +4862,14 @@ async def _build_amendment_chunk_map(
                         entity_chunk_data = await entity_chunks_db.get_by_id(possible_name)
                         if entity_chunk_data and "chunk_ids" in entity_chunk_data:
                             matched_chunks.extend(entity_chunk_data["chunk_ids"])
-                            logger.info(f"DEBUG: Direct lookup found entity '{possible_name}' with chunks {entity_chunk_data['chunk_ids'][:3]}")
+                            # logger.info(f"DEBUG: Direct lookup found entity '{possible_name}' with chunks {entity_chunk_data['chunk_ids'][:3]}")
                             break  # Found, no need to try other names
                     except Exception:
                         pass
             
             # If still no match, try content-based search
             if not matched_chunks and khoan_num and dieu_num and all_source_chunks:
-                logger.info(f"DEBUG: No entity match, searching by content for Khoản {khoan_num} Điều {dieu_num}")
+                # logger.info(f"DEBUG: No entity match, searching by content for Khoản {khoan_num} Điều {dieu_num}")
                 # Search through all source chunks for amendment content
                 for src_chunk in all_source_chunks:
                     src_chunk_id = src_chunk.get("chunk_id", "")
@@ -4744,7 +4904,7 @@ async def _build_amendment_chunk_map(
                             if khoan_num:
                                 verify_pattern = rf'Khoản\s+{khoan_num}[.:\s]'
                                 if not re.search(verify_pattern, amendment_content, re.IGNORECASE):
-                                    logger.info(f"DEBUG: Skipping chunk {amendment_chunk_id[:20]} - doesn't contain Khoản {khoan_num}")
+                                    # logger.info(f"DEBUG: Skipping chunk {amendment_chunk_id[:20]} - doesn't contain Khoản {khoan_num}")
                                     continue
                             
                             if chunk_id not in chunk_to_amendments:
@@ -5283,6 +5443,7 @@ async def _build_context_str(
         response_type=response_type,
         user_prompt=user_prompt,
         session_memory="",  # Empty for overhead calculation
+        appendix_content="",  # Empty for overhead calculation
     )
     sys_prompt_tokens = len(tokenizer.encode(pre_sys_prompt))
 
@@ -6804,7 +6965,35 @@ async def naive_query(
         logger.error("Tokenizer not found in global configuration.")
         return QueryResult(content=PROMPTS["fail_response"])
 
-    chunks = await _get_vector_context(query, chunks_vdb, query_param, None)
+    # Run chunks retrieval and appendix search in parallel
+    logger.info("[naive_query] Starting parallel: chunks retrieve + Appendix")
+    
+    chunks_task = _get_vector_context(query, chunks_vdb, query_param, None)
+    
+    # Add appendix search for healthcare domain
+    appendix_task = None
+    if domain and domain.name == "healthcare":
+        appendix_task = fetch_appendix_content(query, global_config)
+    
+    # Gather tasks
+    if appendix_task:
+        chunks, appendix_content = await asyncio.gather(
+            chunks_task, appendix_task, return_exceptions=True
+        )
+        # Handle appendix exception
+        if isinstance(appendix_content, Exception):
+            logger.warning(f"[naive_query] Appendix search failed: {appendix_content}")
+            appendix_content = None
+    else:
+        chunks = await chunks_task
+        appendix_content = None
+    
+    # Handle chunks exception
+    if isinstance(chunks, Exception):
+        logger.error(f"[naive_query] Chunks retrieve failed: {chunks}")
+        chunks = None
+    
+    # logger.info(f"[naive_query] Parallel complete - Chunks: {'OK' if chunks else 'FAIL'}, Appendix: {'OK' if appendix_content else 'SKIP'}")
 
     if chunks is None or len(chunks) == 0:
         logger.info(
@@ -6820,7 +7009,7 @@ async def naive_query(
     )
 
     # Calculate system prompt template tokens (excluding content_data)
-    user_prompt = f"\n\n{query_param.user_prompt}" if query_param.user_prompt else "n/a"
+    user_prompt = query
     response_type = (
         query_param.response_type
         if query_param.response_type
@@ -6920,13 +7109,24 @@ async def naive_query(
     # Prepare session_memory for prompt (empty string if not provided)
     session_memory_content = query_param.session_memory if query_param.session_memory else "(Không có lịch sử hội thoại)"
     if query_param.session_memory:
-        logger.info(f"[naive_query] Including session_memory ({len(query_param.session_memory)} chars) in system prompt")
+        # logger.info(f"[naive_query] Including session_memory ({len(query_param.session_memory)} chars) in system prompt")
+        pass
+
+    # Format appendix_content for prompt (already fetched in parallel above)
+    if appendix_content:
+        # logger.info(f"[naive_query] Including appendix_content ({len(appendix_content)} chars) in system prompt")
+        appendix_content_formatted = appendix_content
+    elif domain and domain.name == "healthcare":
+        appendix_content_formatted = "(Không có nội dung phụ lục bổ sung)"
+    else:
+        appendix_content_formatted = "(Không áp dụng cho domain này)"
 
     sys_prompt = sys_prompt_template.format(
         response_type=query_param.response_type,
         user_prompt=user_prompt,
         content_data=context_content,
         session_memory=session_memory_content,
+        appendix_content=appendix_content_formatted,
     )
 
     user_query = query

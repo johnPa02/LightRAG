@@ -117,7 +117,7 @@ class QueryRequest(BaseModel):
     )
 
     use_perplexity: Optional[bool] = Field(
-        default=True,
+        default=False,
         description="If True, enriches RAG context with Perplexity web search results before sending to LLM. Requires PERPLEXITY_API_KEY environment variable.",
     )
 

@@ -16,6 +16,7 @@ venv/
 .env.*
 .env.backup
 .env.dev.tmp
+docker/envs/*.env
 
 # Build / Distribution
 dist/

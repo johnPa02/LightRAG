@@ -3785,44 +3785,68 @@ async def _perform_kg_search(
         )
 
     else:  # hybrid or mix mode
+        # OPTIMIZATION: Run search tasks in parallel
+        start_time = time.time()
+        tasks = []
+        task_types = []
+        
         if len(ll_keywords) > 0:
-            local_entities, local_relations = await _get_node_data(
+            tasks.append(_get_node_data(
                 ll_keywords,
                 knowledge_graph_inst,
                 entities_vdb,
                 query_param,
-            )
+            ))
+            task_types.append("local")
+            
         if len(hl_keywords) > 0:
-            global_relations, global_entities = await _get_edge_data(
+            tasks.append(_get_edge_data(
                 hl_keywords,
                 knowledge_graph_inst,
                 relationships_vdb,
                 query_param,
-            )
-
+            ))
+            task_types.append("global")
+            
         # Get vector chunks for mix mode
         if query_param.mode == "mix" and chunks_vdb:
             has_embedding = query_embedding is not None and (hasattr(query_embedding, '__len__') and len(query_embedding) > 0)
             logger.info(f"DEBUG: Mix mode calling _get_vector_context, query_embedding is {'set' if has_embedding else 'None'}")
-            vector_chunks = await _get_vector_context(
+            tasks.append(_get_vector_context(
                 query,
                 chunks_vdb,
                 query_param,
                 query_embedding,
-            )
-            logger.info(f"DEBUG: Mix mode got {len(vector_chunks)} vector chunks")
-            # Track vector chunks with source metadata
-            for i, chunk in enumerate(vector_chunks):
-                # Qdrant stores chunk ID in __id__ field within payload
-                chunk_id = chunk.get("__id__") or chunk.get("chunk_id") or chunk.get("id")
-                if chunk_id:
-                    chunk_tracking[chunk_id] = {
-                        "source": "C",
-                        "frequency": 1,  # Vector chunks always have frequency 1
-                        "order": i + 1,  # 1-based order in vector search results
-                    }
-                else:
-                    logger.warning(f"Vector chunk missing chunk_id: {chunk}")
+            ))
+            task_types.append("vector")
+            
+        # Execute all retrieval tasks in parallel
+        if tasks:
+            results = await asyncio.gather(*tasks)
+            
+            # Unpack results
+            for i, res in enumerate(results):
+                t_type = task_types[i]
+                if t_type == "local":
+                    local_entities, local_relations = res
+                elif t_type == "global":
+                    global_relations, global_entities = res
+                elif t_type == "vector":
+                    vector_chunks = res
+                    logger.info(f"DEBUG: Mix mode got {len(vector_chunks)} vector chunks")
+                    # Track vector chunks with source metadata
+                    for i, chunk in enumerate(vector_chunks):
+                        # Qdrant stores chunk ID in __id__ field within payload
+                        chunk_id = chunk.get("__id__") or chunk.get("chunk_id") or chunk.get("id")
+                        if chunk_id:
+                            chunk_tracking[chunk_id] = {
+                                "source": "vector",
+                                "frequency": 1,
+                                "order": i
+                            }
+        
+        logger.info(f"[PERF] Parallel search completed in {time.time() - start_time:.2f}s")
+
 
     # Round-robin merge entities
     final_entities = []
@@ -4765,88 +4789,174 @@ async def _build_amendment_chunk_map(
     if not text_chunks_db:
         return chunk_to_amendments
     
+    import time as _time
+    _start = _time.time()
+    
     # Build entity name to chunks map - prefer from entity_chunks_db for complete chunk_ids
     entity_to_chunks = {}
     
-    # First, try to get all chunk_ids from entity_chunks_db
+    # OPTIMIZATION: Use batch get_by_ids to fetch all entity chunks at once
     if entity_chunks_db:
+        # Collect all unique entity names that we need to look up
+        entity_names_to_fetch = set()
         for entity in filtered_entities:
-            entity_name = entity.get("entity_name", "")
-            if entity_name:
-                try:
-                    entity_chunk_data = await entity_chunks_db.get_by_id(entity_name)
-                    if entity_chunk_data and "chunk_ids" in entity_chunk_data:
-                        entity_to_chunks[entity_name] = entity_chunk_data["chunk_ids"]
-                except Exception:
-                    pass
-    
-    # Fallback: use source_id from filtered_entities if entity_chunks_db not available
-    if not entity_to_chunks:
-        for entity in filtered_entities:
-            entity_name = entity.get("entity_name", "")
-            source_id = entity.get("source_id", "")
-            if entity_name and source_id:
-                if entity_name not in entity_to_chunks:
-                    entity_to_chunks[entity_name] = []
-                entity_to_chunks[entity_name].append(source_id)
+            name = entity.get("entity_name")
+            if name:
+                entity_names_to_fetch.add(name)
+        
+        if entity_names_to_fetch:
+            try:
+                # Batch fetch
+                fetched_data_list = await entity_chunks_db.get_by_ids(list(entity_names_to_fetch))
+                
+                # Check if result is a list (as per BaseKVStorage interface) or dict (some impls might differ)
+                if isinstance(fetched_data_list, list):
+                    # For list result, we need to map back to entity names.
+                    # Assuming the data object contains the key or we iterate to find match?
+                    # BaseKVStorage doesn't guarantee order if underlying storage doesn't.
+                    # BUT typically for KV storage, the data stored contains the key usually.
+                    # Let's check typical data structure. Usually it's {"entity_name": ..., "chunk_ids": ...}
+                    # If not, we might have an issue mapping back.
+                    # However, if data is just the value, and we don't know the key...
+                    # Wait, Qdrant/Redis usually return key-value or we can infer.
+                    # Let's assume the stored data has the key field or we can't map it.
+                    # Existing code: `await entity_chunks_db.get_by_id(entity_name)` -> returns `entity_chunk_data`
+                    # `if entity_chunk_data and "chunk_ids" in entity_chunk_data:`
+                    # It doesn't check for entity_name in data.
+                    # Let's look at `index.py` or where data is stored to be sure.
+                    # Safest bet: iterate and check if "entity_name" or "id" field matches.
+                    # OR: if the underlying storage returns a dict {id: data}, that would be better.
+                    # The base class signature says `-> list[dict[str, Any]]`.
+                    # Let's assume the data contains the `entity_name` or similar ID field.
+                    for data in fetched_data_list:
+                         if not data: continue
+                         # Try to find the key in the data
+                         key = data.get("entity_name") or data.get("id") or data.get("__id__")
+                         if key and "chunk_ids" in data:
+                             entity_to_chunks[key] = data["chunk_ids"]
+                elif isinstance(fetched_data_list, dict):
+                     # If implementation returns dict {key: data}
+                     for key, data in fetched_data_list.items():
+                         if data and "chunk_ids" in data:
+                             entity_to_chunks[key] = data["chunk_ids"]
+            except Exception as e:
+                logger.warning(f"Batch fetch entity chunks failed: {e}")
+                # Fallback to sequential if batch fails
+                pass
+
+    # Fallback/fill missing from source_id
+    for entity in filtered_entities:
+        entity_name = entity.get("entity_name", "")
+        if entity_name and entity_name not in entity_to_chunks:
+             source_id = entity.get("source_id", "")
+             if source_id:
+                 entity_to_chunks[entity_name] = [source_id]
     
     # Debug: Log entity_to_chunks for Khoản 10
     khoan10_entities = {k: v for k, v in entity_to_chunks.items() if "khoản 10" in k.lower()}
     if khoan10_entities:
         logger.info(f"DEBUG: entity_to_chunks for Khoản 10: {khoan10_entities}")
     
-    # For each chunk, parse annotations and find amendment chunks
+    # OPTIMIZATION: 3-Pass Batch Processing
+    # Pass 1: Parse all chunks and collect missing entities
+    chunk_updates = []
+    entities_to_lookup = set()
+    
     for chunk in all_chunks:
-        # Qdrant stores chunk ID in __id__ field within payload
         chunk_id = chunk.get("__id__") or chunk.get("chunk_id") or chunk.get("id")
         content = chunk.get("content", "")
         
-        # Debug: Check if this is Điều 23 chunk
-        if chunk_id and "f39190da" in chunk_id:
-            logger.info(f"DEBUG: Processing Điều 23 chunk {chunk_id[:20]}, content[:100]={content[:100] if content else 'EMPTY'}")
-        
         if not chunk_id or not content:
             continue
-        
-        # Parse amendment annotations
+            
         amendment_entity_names = _parse_amendment_annotations(content)
+        if not amendment_entity_names:
+            continue
+            
+        chunk_updates.append({
+            "chunk_id": chunk_id,
+            "content": content,
+            "amendment_names": amendment_entity_names
+        })
         
-        if amendment_entity_names:
-            # logger.info(f"DEBUG: Chunk {chunk_id[:20]} has amendment annotations: {amendment_entity_names}")
-            pass
-        
+        # Identify fallback lookups needed
         for entity_name in amendment_entity_names:
-            # Extract "Khoản X" from entity name for precise matching
             khoan_match = re.search(r'Khoản\s+(\d+[a-z]?)', entity_name, re.IGNORECASE)
             dieu_match = re.search(r'Điều\s+(\d+)', entity_name, re.IGNORECASE)
             khoan_num = khoan_match.group(1) if khoan_match else None
             dieu_num = dieu_match.group(1) if dieu_match else None
             
-            # logger.info(f"DEBUG: Looking for amendment khoan={khoan_num}, dieu={dieu_num}")
-            
-            # Try to find matching entity with EXACT Khoản AND Điều number
-            matched_chunks = []
-            
-            for ent_name, chunk_ids in entity_to_chunks.items():
-                # Entity must have same Khoản AND Điều number if specified
+            # Check if we already have a direct match in entity_to_chunks
+            has_direct_match = False
+            for ent_name in entity_to_chunks:
+                # Same check as before
                 if khoan_num and dieu_num:
                     ent_khoan_match = re.search(r'Khoản\s+(\d+[a-z]?)', ent_name, re.IGNORECASE)
                     ent_dieu_match = re.search(r'Điều\s+(\d+)', ent_name, re.IGNORECASE)
                     if ent_khoan_match and ent_dieu_match:
-                        ent_khoan_num = ent_khoan_match.group(1)
-                        ent_dieu_num = ent_dieu_match.group(1)
-                        if ent_khoan_num.lower() == khoan_num.lower() and ent_dieu_num == dieu_num:
-                            matched_chunks.extend(chunk_ids)
-                            logger.info(f"DEBUG: EXACT Khoản+Điều match entity '{ent_name}' with chunks {chunk_ids[:3]}")
+                         if ent_khoan_match.group(1).lower() == khoan_num.lower() and ent_dieu_match.group(1) == dieu_num:
+                             has_direct_match = True
+                             break
             
-            # If no match in entity_to_chunks, try direct lookup from entity_chunks_db
-            if not matched_chunks and entity_chunks_db and khoan_num:
-                # Build possible entity names based on parsed annotation
-                possible_names = [
-                    entity_name,  # Original parsed name: "Khoản 10 - Điều 1 - Luật Doanh nghiệp sửa đổi 2025"
-                ]
-                
-                # Extract law name and build alternative formats
+            if not has_direct_match and khoan_num:
+                # Add possible names to lookup set
+                entities_to_lookup.add(entity_name)
+                # Parse law name
+                law_match = re.search(r'(Luật\s+[\w\s]+(?:sửa đổi\s+)?\d{4})', entity_name, re.IGNORECASE)
+                if law_match and dieu_num:
+                    law_name = law_match.group(1)
+                    entities_to_lookup.add(f"Khoản {khoan_num} - Điều {dieu_num} - {law_name}")
+                    entities_to_lookup.add(f"Khoản {khoan_num} Điều {dieu_num} {law_name}")
+                    entities_to_lookup.add(f"Khoản {khoan_num} - Điều {dieu_num} {law_name}")
+                    entities_to_lookup.add(f"Khoản {khoan_num} Điều {dieu_num} - {law_name}")
+
+    # Pass 2: Batch Lookup Extra Entities
+    if entities_to_lookup and entity_chunks_db:
+        try:
+            fetched_data = await entity_chunks_db.get_by_ids(list(entities_to_lookup))
+            if isinstance(fetched_data, list):
+                for data in fetched_data:
+                    if not data: continue
+                    key = data.get("entity_name") or data.get("id") or data.get("__id__")
+                    if key and "chunk_ids" in data:
+                        entity_to_chunks[key] = data["chunk_ids"]
+            elif isinstance(fetched_data, dict):
+                 for key, data in fetched_data.items():
+                     if data and "chunk_ids" in data:
+                         entity_to_chunks[key] = data["chunk_ids"]
+        except Exception as e:
+            logger.warning(f"Batch fetch extra entity chunks failed: {e}")
+
+    # Pass 3: Resolve Amendment Chunk IDs
+    chunks_to_fetch = set()
+    chunk_resolution_map = {} # chunk_id -> list of (amendment_chunk_id, khoan_num)
+    
+    for item in chunk_updates:
+        chunk_id = item["chunk_id"]
+        amendment_names = item["amendment_names"]
+        
+        resolution_list = []
+        
+        for entity_name in amendment_names:
+            khoan_match = re.search(r'Khoản\s+(\d+[a-z]?)', entity_name, re.IGNORECASE)
+            dieu_match = re.search(r'Điều\s+(\d+)', entity_name, re.IGNORECASE)
+            khoan_num = khoan_match.group(1) if khoan_match else None
+            dieu_num = dieu_match.group(1) if dieu_match else None
+            
+            matched_ids = []
+            
+            # 3a. Check entity_to_chunks (now populated with all fallbacks)
+            for ent_name, chunk_ids in entity_to_chunks.items():
+                if khoan_num and dieu_num:
+                    ent_khoan_match = re.search(r'Khoản\s+(\d+[a-z]?)', ent_name, re.IGNORECASE)
+                    ent_dieu_match = re.search(r'Điều\s+(\d+)', ent_name, re.IGNORECASE)
+                    if ent_khoan_match and ent_dieu_match:
+                         if ent_khoan_match.group(1).lower() == khoan_num.lower() and ent_dieu_match.group(1) == dieu_num:
+                             matched_ids.extend(chunk_ids)
+
+            # 3a.5 BACKUP: Direct lookup if batch failed (prevents fall-through to expensive content search)
+            if not matched_ids and entity_chunks_db and khoan_num:
+                possible_names = [entity_name]
                 law_match = re.search(r'(Luật\s+[\w\s]+(?:sửa đổi\s+)?\d{4})', entity_name, re.IGNORECASE)
                 if law_match and dieu_num:
                     law_name = law_match.group(1)
@@ -4857,72 +4967,84 @@ async def _build_amendment_chunk_map(
                         f"Khoản {khoan_num} Điều {dieu_num} - {law_name}",
                     ])
                 
-                for possible_name in possible_names:
+                for p_name in possible_names:
+                    if p_name in entity_to_chunks: continue # already checked
                     try:
-                        entity_chunk_data = await entity_chunks_db.get_by_id(possible_name)
-                        if entity_chunk_data and "chunk_ids" in entity_chunk_data:
-                            matched_chunks.extend(entity_chunk_data["chunk_ids"])
-                            # logger.info(f"DEBUG: Direct lookup found entity '{possible_name}' with chunks {entity_chunk_data['chunk_ids'][:3]}")
-                            break  # Found, no need to try other names
+                        # Sequential fallback
+                        data = await entity_chunks_db.get_by_id(p_name)
+                        if data and "chunk_ids" in data:
+                            matched_ids.extend(data["chunk_ids"])
+                            # Cache it for next time
+                            entity_to_chunks[p_name] = data["chunk_ids"]
+                            break
                     except Exception:
                         pass
             
-            # If still no match, try content-based search
-            if not matched_chunks and khoan_num and dieu_num and all_source_chunks:
-                # logger.info(f"DEBUG: No entity match, searching by content for Khoản {khoan_num} Điều {dieu_num}")
-                # Search through all source chunks for amendment content
+            # 3b. Content fallback (if no entity match)
+            if not matched_ids and khoan_num and dieu_num and all_source_chunks:
                 for src_chunk in all_source_chunks:
-                    src_chunk_id = src_chunk.get("chunk_id", "")
+                    src_chunk_id = src_chunk.get("chunk_id") or src_chunk.get("id")
+                    if src_chunk_id == chunk_id: continue
                     src_content = src_chunk.get("content", "")
-                    
-                    # Skip self
-                    if src_chunk_id == chunk_id:
-                        continue
-                    
-                    # Pattern: "Khoản X. Bổ sung khoản X ... Điều Y"
                     pattern1 = rf'Khoản\s+{khoan_num}[.:]?\s+Bổ sung.*?Điều\s+{dieu_num}'
                     pattern2 = rf'Điều\s+1[.:]?.*?Khoản\s+{khoan_num}[.:]?\s+Bổ sung.*?Điều\s+{dieu_num}'
-                    
                     if re.search(pattern1, src_content, re.IGNORECASE | re.DOTALL) or re.search(pattern2, src_content, re.IGNORECASE | re.DOTALL):
-                        matched_chunks.append(src_chunk_id)
-                        logger.info(f"DEBUG: Content match found in chunk {src_chunk_id[:20]}")
-                        break  # Take first match
+                        matched_ids.append(src_chunk_id)
+                        break
+
+            if matched_ids:
+                for mid in matched_ids:
+                    if mid != chunk_id:
+                        chunks_to_fetch.add(mid)
+                        resolution_list.append((mid, khoan_num))
+        
+        if resolution_list:
+            chunk_resolution_map[chunk_id] = resolution_list
+
+    # Pass 4: Batch Fetch Amendment Chunks
+    fetched_chunks_map = {}
+    if chunks_to_fetch and text_chunks_db:
+        try:
+            fetched_chunks = await text_chunks_db.get_by_ids(list(chunks_to_fetch))
+             # Map back to dict
+            for chunk_data in fetched_chunks:
+                 if not chunk_data: continue
+                 # Try to get ID from content or use the request IDs if possible
+                 # Assuming data has ID.
+                 cid = chunk_data.get("chunk_id") or chunk_data.get("id") or chunk_data.get("__id__")
+                 if cid:
+                     fetched_chunks_map[cid] = chunk_data
+        except Exception as e:
+            logger.warning(f"Batch fetch amendment chunks failed: {e}")
+
+    # Pass 5: Final Assembly with Verification
+    for main_chunk_id, resolutions in chunk_resolution_map.items():
+        if main_chunk_id not in chunk_to_amendments:
+            chunk_to_amendments[main_chunk_id] = []
             
-            if matched_chunks:
-                # Get chunk contents - now filter to only use chunks containing actual amendment content
-                for amendment_chunk_id in matched_chunks:
-                    # Skip if amendment chunk is the same as main chunk
-                    if amendment_chunk_id == chunk_id:
+        existing_ids = {c.get("chunk_id") for c in chunk_to_amendments[main_chunk_id]}
+        
+        for amend_id, khoan_num in resolutions:
+            if amend_id in existing_ids:
+                continue
+                
+            chunk_data = fetched_chunks_map.get(amend_id)
+            if chunk_data:
+                content = chunk_data.get("content", "")
+                # Verify content (Khoản X check)
+                if khoan_num:
+                    if not re.search(rf'Khoản\s+{khoan_num}[.:\s]', content, re.IGNORECASE):
                         continue
-                    
-                    try:
-                        chunk_data = await text_chunks_db.get_by_id(amendment_chunk_id)
-                        if chunk_data:
-                            amendment_content = chunk_data.get("content", "")
-                            
-                            # Verify this chunk actually contains the amendment content (Khoản X)
-                            if khoan_num:
-                                verify_pattern = rf'Khoản\s+{khoan_num}[.:\s]'
-                                if not re.search(verify_pattern, amendment_content, re.IGNORECASE):
-                                    # logger.info(f"DEBUG: Skipping chunk {amendment_chunk_id[:20]} - doesn't contain Khoản {khoan_num}")
-                                    continue
-                            
-                            if chunk_id not in chunk_to_amendments:
-                                chunk_to_amendments[chunk_id] = []
-                            
-                            # Avoid duplicates
-                            existing_ids = [c.get("chunk_id") for c in chunk_to_amendments[chunk_id]]
-                            if amendment_chunk_id not in existing_ids:
-                                chunk_to_amendments[chunk_id].append({
-                                    "chunk_id": amendment_chunk_id,
-                                    "content": amendment_content,
-                                    "file_path": chunk_data.get("file_path", "unknown_source"),
-                                    "is_amendment": True,
-                                })
-                                logger.info(f"DEBUG: Mapped amendment chunk {amendment_chunk_id[:20]} to main chunk {chunk_id[:20]}")
-                    except Exception as e:
-                        logger.debug(f"Failed to get amendment chunk {amendment_chunk_id}: {e}")
+                
+                chunk_to_amendments[main_chunk_id].append({
+                    "chunk_id": amend_id,
+                    "content": content,
+                    "file_path": chunk_data.get("file_path", "unknown_source"),
+                    "is_amendment": True,
+                })
+                existing_ids.add(amend_id)
     
+    logger.info(f"[PERF] _build_amendment_chunk_map completed in {_time.time() - _start:.2f}s (Batched)")
     return chunk_to_amendments
 
 

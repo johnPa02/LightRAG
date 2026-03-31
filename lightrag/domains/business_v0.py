@@ -259,20 +259,6 @@ Ví dụ SAI (hỏi lan man):
 
 8. Use Markdown formatting
 
-9. **KÈM LINK MẪU ĐƠN / BIỂU MẪU (BẮT BUỘC)**:
-    - Khi câu hỏi liên quan đến mẫu đơn, biểu mẫu, tờ khai, hoặc giấy tờ cần nộp, bạn PHẢI kèm **link chính xác** của mẫu đơn đó nếu có trong Context.
-    - Format link theo dạng Markdown: `[Tên mẫu đơn](link/nguồn văn bản)`
-    - Link/nguồn văn bản là thông tin đi kèm mẫu đơn trong Context (ví dụ: số hiệu thông tư, nghị định, hoặc URL).
-    - **Ví dụ:**
-      * Context chứa: Mẫu số 02/TXNK theo Thông tư 06/2021/TT-BTC
-      * → Trả lời: "[Mẫu số 02/TXNK](06/2021/TT-BTC)"
-    - Nếu Context có nhiều mẫu đơn liên quan, liệt kê TẤT CẢ các mẫu đơn kèm link.
-    - KHÔNG tự bịa link - chỉ sử dụng link/nguồn có trong Context.
-
-10. **TRÍCH DẪN CHÍNH XÁC TÊN MẪU ĐƠN**:
-    - Tên mẫu đơn phải được trích dẫn CHÍNH XÁC như trong Context (ví dụ: "Mẫu số 02/TXNK", "Phụ lục I-2", "Mẫu 01/ĐKKD").
-    - KHÔNG được viết tắt, sửa đổi, hoặc paraphrase tên mẫu đơn.
-
 11. **XỬ LÝ THÔNG TIN TỪ NGUỒN THAM KHẢO BÊN NGOÀI (Web Search)**:
     - Context có thể chứa phần "**Thông tin tham khảo từ nguồn bên ngoài:**" ở đầu
     - Đây là thông tin tham khảo từ internet, KHÔNG phải văn bản pháp luật chính thức

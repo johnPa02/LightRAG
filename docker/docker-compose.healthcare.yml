@@ -1,0 +1,90 @@
+# Healthcare Domain Stack
+#
+# PROD: docker compose -p hc-prod -f docker/docker-compose.healthcare.yml --env-file docker/envs/healthcare.prod.env up -d
+# DEV:  docker compose -p hc-dev  -f docker/docker-compose.healthcare.yml --env-file docker/envs/healthcare.dev.env  up -d
+#
+# The -p flag sets the project name, which automatically prefixes all
+# container names, volumes, and networks. This allows running prod and
+# dev side by side without conflicts.
+
+services:
+  neo4j:
+    image: neo4j:5.26.0-community
+    ports:
+      - "${NEO4J_HTTP_PORT:-7474}:7474"
+      - "${NEO4J_BOLT_PORT:-7687}:7687"
+    environment:
+      - NEO4J_AUTH=${NEO4J_USERNAME:-neo4j}/${NEO4J_PASSWORD:-lightrag123}
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_apoc_export_file_enabled=true
+      - NEO4J_apoc_import_file_enabled=true
+      - NEO4J_apoc_import_file_use__neo4j__config=true
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_dbms_security_procedures_allowlist=apoc.*
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "${QDRANT_HTTP_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 1G
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__LOG_LEVEL=INFO
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 5 bash -c 'cat < /dev/null > /dev/tcp/localhost/6333' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  lightrag:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "${LIGHTRAG_PORT:-9621}:${LIGHTRAG_PORT:-9621}"
+    volumes:
+      - rag_storage:/app/data/rag_storage
+      - inputs:/app/data/inputs
+      - ../config.ini:/app/config.ini
+    env_file:
+      - envs/healthcare.${ENV:-prod}.env
+    environment:
+      - PORT=${LIGHTRAG_PORT:-9621}
+      - NEO4J_URI=bolt://neo4j:7687
+      - QDRANT_URL=http://qdrant:6333
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
+  qdrant_data:
+  rag_storage:
+  inputs:

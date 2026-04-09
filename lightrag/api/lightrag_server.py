@@ -522,6 +522,57 @@ def create_app(args):
 
         return optimized_openai_alike_model_complete
 
+    def create_qwen_llm_func(enable_thinking: bool, llm_timeout: int):
+        """Create Qwen LLM function for dynamic provider selection.
+
+        Qwen API is OpenAI-compatible, so we reuse openai_complete_if_cache.
+        The enable_thinking parameter controls the chat_template_kwargs.enable_thinking
+        parameter passed via extra_body to the Qwen vLLM/SGLang server.
+
+        Args:
+            enable_thinking: Whether to enable Qwen's thinking/reasoning mode.
+            llm_timeout: Request timeout in seconds.
+        """
+        qwen_model = os.getenv("QWEN_LLM_MODEL", "Qwen/Qwen3.5-9B")
+        qwen_host = os.getenv("QWEN_LLM_BINDING_HOST", "http://42.96.46.234:30000/v1")
+        qwen_api_key = os.getenv("QWEN_LLM_BINDING_API_KEY", "sk-qwen-llm-service-2026")
+        qwen_temperature = float(os.getenv("QWEN_LLM_TEMPERATURE", "0.3"))
+        qwen_max_tokens = int(os.getenv("QWEN_LLM_MAX_TOKENS", "9000"))
+
+        extra_body = {"chat_template_kwargs": {"enable_thinking": enable_thinking}}
+
+        async def qwen_model_complete(
+            prompt,
+            system_prompt=None,
+            history_messages=None,
+            keyword_extraction=False,
+            **kwargs,
+        ) -> str:
+            from lightrag.llm.openai import openai_complete_if_cache
+
+            keyword_extraction = kwargs.pop("keyword_extraction", None)
+            if keyword_extraction:
+                kwargs["response_format"] = GPTKeywordExtractionFormat
+            if history_messages is None:
+                history_messages = []
+
+            kwargs["timeout"] = llm_timeout
+            kwargs["temperature"] = qwen_temperature
+            kwargs["max_tokens"] = qwen_max_tokens
+            kwargs["extra_body"] = extra_body
+
+            return await openai_complete_if_cache(
+                qwen_model,
+                prompt,
+                system_prompt=system_prompt,
+                history_messages=history_messages,
+                base_url=qwen_host,
+                api_key=qwen_api_key,
+                **kwargs,
+            )
+
+        return qwen_model_complete
+
     def create_optimized_azure_openai_llm_func(
         config_cache: LLMConfigCache, args, llm_timeout: int
     ):
@@ -1039,6 +1090,33 @@ def create_app(args):
         logger.error(f"Failed to initialize LightRAG: {e}")
         raise
 
+    # Build LLM provider registry for dynamic per-request provider selection
+    # Qwen functions are only created if QWEN_LLM_BINDING_HOST is configured
+    llm_providers = {}
+    qwen_host = os.getenv("QWEN_LLM_BINDING_HOST")
+    if qwen_host:
+        from lightrag.utils import priority_limit_async_func_call
+
+        # Wrap with priority_limit_async_func_call (same as default LLM func)
+        # This handles _priority kwarg that operate.py/aquery_llm injects
+        qwen_wrapper = priority_limit_async_func_call(
+            args.max_async,
+            llm_timeout=llm_timeout,
+            queue_name="Qwen LLM func",
+        )
+        llm_providers["qwen_thinking"] = qwen_wrapper(
+            create_qwen_llm_func(enable_thinking=True, llm_timeout=llm_timeout)
+        )
+        llm_providers["qwen_nothink"] = qwen_wrapper(
+            create_qwen_llm_func(enable_thinking=False, llm_timeout=llm_timeout)
+        )
+        logger.info(
+            f"Qwen LLM provider registered: model={os.getenv('QWEN_LLM_MODEL', 'Qwen/Qwen3.5-9B')} "
+            f"host={qwen_host}"
+        )
+    else:
+        logger.info("Qwen LLM provider not configured (QWEN_LLM_BINDING_HOST not set)")
+
     # Add routes
     app.include_router(
         create_document_routes(
@@ -1050,15 +1128,15 @@ def create_app(args):
     # Mount query routes for each domain
     # Business domain - default routes at /query (backward compatible) and /api/business
     app.include_router(
-        create_query_routes(rag, api_key, args.top_k, domain=business_config)
+        create_query_routes(rag, api_key, args.top_k, domain=business_config, llm_providers=llm_providers)
     )
     app.include_router(
-        create_query_routes(rag, api_key, args.top_k, domain=business_config),
+        create_query_routes(rag, api_key, args.top_k, domain=business_config, llm_providers=llm_providers),
         prefix="/api/business"
     )
     # Healthcare domain - routes at /api/healthcare
     app.include_router(
-        create_query_routes(rag, api_key, args.top_k, domain=healthcare_config),
+        create_query_routes(rag, api_key, args.top_k, domain=healthcare_config, llm_providers=llm_providers),
         prefix="/api/healthcare"
     )
     app.include_router(create_graph_routes(rag, api_key))

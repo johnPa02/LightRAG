@@ -121,6 +121,16 @@ class QueryRequest(BaseModel):
         description="If True, enriches RAG context with Perplexity web search results before sending to LLM. Requires PERPLEXITY_API_KEY environment variable.",
     )
 
+    llm_provider: Optional[Literal["openai", "qwen"]] = Field(
+        default=None,
+        description="LLM provider to use for this query. 'openai' (default) uses the server's configured OpenAI-compatible LLM. 'qwen' uses the Qwen3.5-9B model.",
+    )
+
+    enable_thinking: Optional[bool] = Field(
+        default=None,
+        description="Enable thinking/reasoning mode for Qwen. Only applies when llm_provider='qwen'. Default is False.",
+    )
+
     @field_validator("query", mode="after")
     @classmethod
     def query_strip_after(cls, query: str) -> str:
@@ -145,7 +155,8 @@ class QueryRequest(BaseModel):
         # Use Pydantic's `.model_dump(exclude_none=True)` to remove None values automatically
         # Exclude API-level parameters that don't belong in QueryParam
         request_data = self.model_dump(
-            exclude_none=True, exclude={"query", "include_chunk_content"}
+            exclude_none=True,
+            exclude={"query", "include_chunk_content", "llm_provider", "enable_thinking"},
         )
 
         # Ensure `mode` and `stream` are set explicitly
@@ -201,10 +212,42 @@ class StreamChunkResponse(BaseModel):
     )
 
 
-def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60, domain: Optional[DomainConfig] = None):
+def create_query_routes(
+    rag,
+    api_key: Optional[str] = None,
+    top_k: int = 60,
+    domain: Optional[DomainConfig] = None,
+    llm_providers: Optional[Dict[str, Any]] = None,
+):
     # Create a new router for each domain to avoid route conflicts
     router = APIRouter(tags=["query"])
     combined_auth = get_combined_auth_dependency(api_key)
+    _llm_providers = llm_providers or {}
+
+    def _resolve_model_func(request: QueryRequest):
+        """Resolve LLM model function based on request's llm_provider and enable_thinking.
+
+        Returns None if default provider should be used (no override needed).
+        Raises HTTPException if provider is requested but not configured.
+        """
+        if request.llm_provider is None or request.llm_provider == "openai":
+            return None  # Use default server LLM
+
+        if request.llm_provider == "qwen":
+            enable_thinking = request.enable_thinking if request.enable_thinking is not None else False
+            key = "qwen_thinking" if enable_thinking else "qwen_nothink"
+
+            if key not in _llm_providers:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Qwen LLM provider is not configured. Set QWEN_LLM_BINDING_HOST in .env to enable it.",
+                )
+            return _llm_providers[key]
+
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown LLM provider: {request.llm_provider}. Supported: 'openai', 'qwen'.",
+        )
 
     @router.post(
         "/query",
@@ -420,6 +463,11 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60, dom
             )  # Ensure stream=False for non-streaming endpoint
             # Force stream=False for /query endpoint regardless of include_references setting
             param.stream = False
+
+            # Resolve LLM provider override (if any)
+            model_func = _resolve_model_func(request)
+            if model_func is not None:
+                param.model_func = model_func
 
             # Unified approach: always use aquery_llm for both cases
             result = await rag.aquery_llm(request.query, param=param, domain=domain)
@@ -676,6 +724,11 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60, dom
             # Use the stream parameter from the request, defaulting to True if not specified
             stream_mode = request.stream if request.stream is not None else True
             param = request.to_query_params(stream_mode)
+
+            # Resolve LLM provider override (if any)
+            model_func = _resolve_model_func(request)
+            if model_func is not None:
+                param.model_func = model_func
 
             from fastapi.responses import StreamingResponse
 

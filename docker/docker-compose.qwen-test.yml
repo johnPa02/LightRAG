@@ -1,0 +1,17 @@
+# Qwen Test Stack - uses biz-dev Neo4j & Qdrant
+# Usage: docker compose -p qwen-test -f docker-compose.qwen-test.yml --env-file envs/business.qwen-test.env up -d --build
+
+services:
+  lightrag:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "${LIGHTRAG_PORT:-9633}:${LIGHTRAG_PORT:-9633}"
+    volumes:
+      - ../config.ini:/app/config.ini
+    env_file:
+      - envs/business.qwen-test.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

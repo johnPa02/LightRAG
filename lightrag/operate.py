@@ -3090,23 +3090,66 @@ async def fetch_appendix_content(
         chunks = vector_data.get("data", {}).get("chunks", [])
         chunk_contents = [chunk["content"] for chunk in chunks if "content" in chunk]
         
-        # logger.info(f"[AppendixSearch] Found {len(chunk_contents)} chunks")
-        
         if not chunk_contents:
             return ""
         
-        # Format content - simple format with appendix names and chunks only
-        appendix_names = [app.get("name", "Unknown") for app in appendices]
+        # Build document_id -> appendix metadata mapping for source attribution
+        doc_id_to_meta = {}
+        for app in appendices:
+            doc_content = app.get("content", "")
+            if doc_content:
+                doc_id_to_meta[doc_content] = {
+                    "name": app.get("name", "Unknown"),
+                    "parent_name": app.get("parent_name", ""),
+                    "purpose": app.get("purpose", ""),
+                    "summary": app.get("summary", ""),
+                }
         
+        # Format content with clear source attribution per chunk
         formatted_parts = [
-            f"**Phụ lục:** {', '.join(appendix_names)}",
+            "Dưới đây là nội dung phụ lục bổ sung từ các văn bản nội bộ/phụ lục liên quan.",
+            "Mỗi đoạn nội dung được gắn với tên văn bản nguồn và mục đích sử dụng.",
+            "Khi sử dụng thông tin từ phụ lục này trong câu trả lời, bạn PHẢI cite tên văn bản nguồn trong phần \"Căn cứ pháp lý\".",
             "",
         ]
         
-        for i, content in enumerate(chunk_contents, 1):
-            formatted_parts.append(content.strip())
-            if i < len(chunk_contents):  # Add separator between chunks
-                formatted_parts.append("")
+        # Print appendix metadata header (once per appendix)
+        for doc_id, meta in doc_id_to_meta.items():
+            formatted_parts.append(f"📄 **{meta['name']}**")
+            if meta.get("parent_name"):
+                formatted_parts.append(f"   Văn bản gốc: {meta['parent_name']}")
+            if meta.get("purpose"):
+                formatted_parts.append(f"   Mục đích: {meta['purpose']}")
+            formatted_parts.append("")
+        
+        formatted_parts.append("---")
+        formatted_parts.append("")
+        
+        for i, chunk in enumerate(chunks, 1):
+            content = chunk.get("content", "").strip()
+            if not content:
+                continue
+            
+            # Resolve source document metadata for this chunk
+            chunk_doc_id = chunk.get("document_id", "") or chunk.get("doc_id", "")
+            meta = doc_id_to_meta.get(chunk_doc_id)
+            
+            # Fallback: try partial match
+            if not meta:
+                for doc_id, m in doc_id_to_meta.items():
+                    if doc_id in str(chunk_doc_id):
+                        meta = m
+                        break
+            
+            # Fallback: use first appendix if only one
+            if not meta and len(doc_id_to_meta) == 1:
+                meta = list(doc_id_to_meta.values())[0]
+            
+            chunk_doc_name = meta["name"] if meta else "Phụ lục không xác định"
+            
+            formatted_parts.append(f"**[Nguồn: {chunk_doc_name}]**")
+            formatted_parts.append(content)
+            formatted_parts.append("")
         
         result = "\n".join(formatted_parts)
         # logger.info(f"[AppendixSearch] Formatted appendix content: {len(result)} chars")

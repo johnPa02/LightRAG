@@ -81,3 +81,18 @@ build: ## Rebuild all LightRAG images
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 	awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
+
+# ============================================
+# Qwen Test
+# ============================================
+QWEN_FILE = -f docker-compose.qwen-test.yml
+
+qwen-test: ## Start Qwen Test (port 9633, uses biz-dev DBs)
+	$(COMPOSE) -p qwen-test $(QWEN_FILE) --env-file envs/business.qwen-test.env up -d --build
+
+qwen-test-down: ## Stop Qwen Test
+	$(COMPOSE) -p qwen-test $(QWEN_FILE) --env-file envs/business.qwen-test.env down
+
+qwen-test-logs: ## Tail Qwen Test logs
+	$(COMPOSE) -p qwen-test $(QWEN_FILE) --env-file envs/business.qwen-test.env logs -f lightrag
+
